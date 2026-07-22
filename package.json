@@ -1,0 +1,23 @@
+{
+  "name": "e",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "debug": "npm run build && npm start",
+    "start": "node dist/test.js",
+    "build": "tsc"
+  },
+  "keywords": [],
+  "type": "module",
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "fs-extra": "^11.3.6",
+    "u-llm-server": "^1.5.2"
+  }
+}
