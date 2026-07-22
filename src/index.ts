@@ -3,6 +3,7 @@ import { ModelClient, packTokens } from 'u-llm-server';
 import { createFreeEvent } from './event-util.js';
 import { Yurandom } from 'yurandom/index.js';
 import { Session } from './session.js';
+import type { Embedder } from './embedder.js';
 
 
 
@@ -11,7 +12,7 @@ import { Session } from './session.js';
 export type AppEvents = { close: [] };
 export class App extends EventEmitter<AppEvents> {
     public readonly rng = new Yurandom(`${process.pid}_${Date.now()}`);
-    public constructor(public readonly client: ModelClient) {
+    public constructor(public readonly client: ModelClient, public readonly embedder: Embedder) {
         super();
     }
     public async run() {
