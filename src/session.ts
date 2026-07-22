@@ -55,40 +55,44 @@ export class Session {
         this.intervals = (params.intervals ?? []).map(({ n_tokens, oninterval }) => ({ n_tokens, oninterval, last_checked: this.line.unparsedTokens.length }));;
         const stopCondition: StopCondition = { max_entropy: this.stopEntropy, eog_stop: true };
         let started = false;
-        while (this.running) {
-            if (!started) {
-                stopCondition.max_tokens = 0;
-            } else {
-                if (this.intervals.length !== 0) {
-                    stopCondition.max_tokens = Math.min(1000000, ...this.intervals.map(e => {
-                        const uncheckedTokens = Math.max(0, this.line.tokens.length - e.last_checked);
-                        return e.n_tokens - uncheckedTokens;
-                    }));
+        try {
+            while (this.running) {
+                if (!started) {
+                    stopCondition.max_tokens = 0;
                 } else {
-                    delete stopCondition.max_tokens;
-                }
-            }
-            const result = await this.line.pull(stopCondition);
-            if (!started) {
-                if (params.onstart !== undefined) {
-                    await params.onstart.call(this, result)
-                }
-                started = true;
-            }
-            if (result.stopReasons.some(e => e === "max_tokens")) {
-                await Promise.all(this.intervals.map(async e => {
-                    if (this.line.tokens.length - e.last_checked >= e.n_tokens) {
-                        e.last_checked += e.n_tokens;
-                        await e.oninterval.call(this, result);
+                    if (this.intervals.length !== 0) {
+                        stopCondition.max_tokens = Math.min(1000000, ...this.intervals.map(e => {
+                            const uncheckedTokens = Math.max(0, this.line.tokens.length - e.last_checked);
+                            return e.n_tokens - uncheckedTokens;
+                        }));
+                    } else {
+                        delete stopCondition.max_tokens;
                     }
-                }));
+                }
+                const result = await this.line.pull(stopCondition);
+                if (!started) {
+                    if (params.onstart !== undefined) {
+                        await params.onstart.call(this, result)
+                    }
+                    started = true;
+                }
+                if (result.stopReasons.some(e => e === "max_tokens")) {
+                    await Promise.all(this.intervals.map(async e => {
+                        if (this.line.tokens.length - e.last_checked >= e.n_tokens) {
+                            e.last_checked += e.n_tokens;
+                            await e.oninterval.call(this, result);
+                        }
+                    }));
+                }
+                if (params.onentropy !== undefined && result.stopReasons.some(e => e === "max_entropy")) {
+                    await params.onentropy.call(this, result);
+                }
+                if (params.oneog !== undefined && result.stopReasons.some(e => e === "eog_stop")) {
+                    await params.oneog.call(this, result);
+                }
             }
-            if (params.onentropy !== undefined && result.stopReasons.some(e => e === "max_entropy")) {
-                await params.onentropy.call(this, result);
-            }
-            if (params.oneog !== undefined && result.stopReasons.some(e => e === "eog_stop")) {
-                await params.oneog.call(this, result);
-            }
+        } finally {
+            this.running = false;
         }
     }
     public async ask(stop: StopCondition, ...text: Parameters<ClientLine["push"]>) {

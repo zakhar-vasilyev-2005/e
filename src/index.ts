@@ -17,6 +17,7 @@ export class App extends EventEmitter<AppEvents> {
     }
     public async run() {
         try {
+            const app = this;
             const lines = await this.client.exec("line_list", null);
             await Promise.all(lines.map(e => { this.client.exec("line_free", { line_id: e.line_id }) }));
             console.log("CONNECTED");
@@ -24,14 +25,16 @@ export class App extends EventEmitter<AppEvents> {
                 system_message: `You are a helpful AI-assistant.`,
                 user_message: `Как звали главного героя в произведении "Криптоэффект", от автора "Серая Зона"?`,
                 stop_entropy: 7,
-                onstart({ content, next }) {
-                    console.log({ content, next });
+                async onstart({ content, text, next }) {
+                    console.log(await app.embedder.embedding(text ?? "Some text..."));
+                    this.stop();
                 },
-                oneog({ content, next }) {
-                    console.log({ content: packTokens(this.line.tokens), next });
+                async oneog() {
                     this.stop();
                 }
             });
+        } catch (e) {
+            console.error(e);
         } finally {
             await this.close();
         }
