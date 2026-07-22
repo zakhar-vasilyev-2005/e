@@ -12,39 +12,6 @@ export type AppEvents = {
 };
 export class App extends EventEmitter<AppEvents> {
     public readonly rng = new Yurandom(`${process.pid}_${Date.now()}`);
-    public static async fromParams(params: {
-        conn: { unix: string } | { host?: string, port: number },
-        fallbackStartServer?: undefined | {
-            modelFile: string,
-            modelParams: ModelParamsSerialized,
-            stdout?: number | IOType | Stream | null,
-            stderr?: number | IOType | Stream | null,
-            timeout?: number
-        }
-    }) {
-        const { conn, fallbackStartServer } = params;
-        let client: ModelClient;
-        try {
-            client = await ModelClient.connect(conn, 500);
-        } catch (e) {
-            if (fallbackStartServer === undefined) {
-                throw new Error(`server not available`);
-            }
-            const { modelFile, modelParams, stdout, stderr, timeout } = fallbackStartServer;
-            const serverProc = fork(
-                path.join(import.meta.dirname, "start-server.js"),
-                [modelFile, JSON.stringify(conn), JSON.stringify(modelParams)],
-                { detached: true, stdio: [null, stdout ?? null, stderr ?? "inherit", "ipc"] }
-            );
-            try {
-                client = await ModelClient.connect(conn, Math.max(0, (timeout ?? 0) - 500));
-            } catch (e) {
-                serverProc.kill("SIGKILL");
-                throw Object.assign(new Error(`cannot start server in given timeout`), { reason: e });
-            }
-        }
-        return new App(client);
-    }
     public constructor(public readonly client: ModelClient) {
         super();
     }
