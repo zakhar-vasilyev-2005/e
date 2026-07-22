@@ -15,7 +15,7 @@ const app = new App(await ModelClient.create({
             split_mode: "none",
             use_extra_bufts: true,
         },
-        stdout: "inherit",
+        stdout: "ignore",
         timeout: 100_000,
     }
 }));
