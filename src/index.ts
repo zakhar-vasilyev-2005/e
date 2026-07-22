@@ -1,5 +1,5 @@
 import EventEmitter from 'events';
-import { ModelClient } from 'u-llm-server';
+import { ModelClient, packTokens } from 'u-llm-server';
 import { createFreeEvent } from './event-util.js';
 import { Yurandom } from 'yurandom/index.js';
 import { Session } from './session.js';
@@ -27,7 +27,7 @@ export class App extends EventEmitter<AppEvents> {
                     console.log({ content, next });
                 },
                 oneog({ content, next }) {
-                    console.log({ content, next });
+                    console.log({ content: packTokens(this.line.tokens), next });
                     this.stop();
                 }
             });
