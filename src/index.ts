@@ -1,10 +1,10 @@
 import EventEmitter from 'events';
-import { ModelClient, type ModelClientParams } from 'u-llm-server';
+import { ModelClient, ModelParamsSchema, type ModelClientParams } from 'u-llm-server';
 import { createFreeEvent } from './event-util.js';
 import { Yurandom } from 'yurandom/index.js';
 import { Session } from './session.js';
-import { Embedder, getModels, type EmbedderCreateParams, type GetModelEntry } from './embedder.js';
-import { Index, MetricKind, type IndexConfig } from 'usearch';
+import { Embedder, getModels, type EmbedderCreateParams, type EmbedderStartParams, type GetModelEntry } from './embedder.js';
+import { Index, MetricKind, ScalarKind, type IndexConfig } from 'usearch';
 import path from 'path';
 import fs from 'fs-extra';
 import { MemoDB, readMemo, type Memo, type MemoContent } from './memory.js';
@@ -13,6 +13,8 @@ import z from 'zod';
 import { getFileTree } from './get-file-tree.js';
 import { el } from 'zod/locales';
 import { VectorNormalizerLib, type VectorNormalizer } from './vector-normalizer.js';
+import { readConfig } from './config.js';
+import type { IOType } from 'child_process';
 
 
 
@@ -32,12 +34,17 @@ export type AgentParams = {
     embedder: Embedder,
     vectorIndexFile: string,
     vectorIndex: Index,
+    vectorIndexThreads: number,
     memoryIndexSaveInterval: number,
     memory: MemoDB,
     memoryIdsFile: string,
     memoryIds: Record<string, string>,
     rng: Yurandom,
     vectorNormalizer: VectorNormalizer,
+    systemPrompt: string,
+    autoRecallQueryLength: number,
+    minimalRecallQueryLength: number,
+    recallMinDistance: number,
 }
 export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly activeFolder: string;
@@ -45,6 +52,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly embedder: Embedder;
     public readonly vectorIndexFile: string;
     public readonly vectorIndex: Index;
+    public readonly vectorIndexThreads: number;
     public readonly memoryIndexSaveInterval: number;
     public memoryIndexSaveLoopRunning: boolean = false;
     public readonly memory: MemoDB;
@@ -53,6 +61,10 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly memoryIdsForName: Record<string, string[]>;
     public readonly rng: Yurandom;
     public readonly vectorNormalizer: VectorNormalizer;
+    public readonly systemPrompt: string;
+    public readonly autoRecallQueryLength: number;
+    public readonly minimalRecallQueryLength: number;
+    public readonly recallMinDistance: number;
     public constructor(params: AgentParams) {
         super();
         this.activeFolder = params.activeFolder;
@@ -60,6 +72,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         this.embedder = params.embedder;
         this.vectorIndexFile = params.vectorIndexFile;
         this.vectorIndex = params.vectorIndex;
+        this.vectorIndexThreads = params.vectorIndexThreads;
         this.memoryIndexSaveInterval = params.memoryIndexSaveInterval;
         this.memory = params.memory;
         this.memoryIdsFile = params.memoryIdsFile;
@@ -72,9 +85,13 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         }
         this.rng = params.rng;
         this.vectorNormalizer = params.vectorNormalizer;
+        this.systemPrompt = params.systemPrompt;
+        this.autoRecallQueryLength = params.autoRecallQueryLength;
+        this.minimalRecallQueryLength = params.minimalRecallQueryLength;
+        this.recallMinDistance = params.recallMinDistance;
     }
     public beforeRecall: Promise<void>[] = [];
-    public async recall(query: RecallQuery, amount: number = 5): Promise<{ memo: Memo, distance: number }[]> {
+    public async recall(query: RecallQuery, maxCount: number = 5, minDistance: number = 0): Promise<{ memo: Memo, distance: number }[]> {
         if (query.name !== undefined) {
             const memo = this.memory.getMemo(query.name);
             return memo === undefined ? [] : [{ memo, distance: 1 }];
@@ -83,11 +100,12 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             await Promise.all(this.beforeRecall);
             this.beforeRecall = [];
         }
-        const queryVector = Float32Array.from(await this.embedder.embedding(query.query));
-        const result = this.vectorIndex.search(queryVector, amount, cpus().length);
+        const rawQueryVector = Float32Array.from(await this.embedder.embedding(query.query));
+        const queryVector = this.vectorNormalizer.normalize(rawQueryVector, 1);
+        const result = this.vectorIndex.search(queryVector, maxCount, this.vectorIndexThreads);
         const toDelete: bigint[] = [];
         const memories: { memo: Memo, distance: number }[] = [];
-        for (let i = 0; i < amount; i++) {
+        for (let i = 0; i < maxCount; i++) {
             const vectorId = result.keys[i];
             const distance = result.distances[i];
             if (vectorId === undefined || distance === undefined) {
@@ -109,16 +127,17 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         }
         this.vectorIndex.remove(toDelete);
         if (toDelete.length !== 0) {
-            return await this.recall(query, amount);
+            return await this.recall(query, maxCount);
         }
-        return memories;
+        return memories.filter(e => e.distance >= minDistance);
     }
     public async memorize(content: MemoContent, name: string) {
         if (this.memory.getMemo(name) !== undefined) {
             await this.forget(name);
         }
         await this.memory.addMemo(content, name);
-        const idsAndWeights = content.keys.map(({ weight }) => {
+        const keys = content.keys ?? [];
+        const idsAndWeights = keys.map(({ weight }) => {
             let id: bigint;
             while (true) {
                 id = BigInt(this.rng.int(100, 1_000_000_000));
@@ -133,8 +152,8 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         });
         const ids = idsAndWeights.map(e => e.id);
         const weights = idsAndWeights.map(e => e.weight);
-        const vectors = new Float32Array(content.keys.length * this.vectorIndex.dimensions());
-        const vectorsRaw = await this.embedder.embeddingBatched(content.keys.map(e => e.keyContent));
+        const vectors = new Float32Array(keys.length * this.vectorIndex.dimensions());
+        const vectorsRaw = await this.embedder.embeddingBatched(keys.map(e => e.keyContent));
         let offset = 0;
         for (const vec of vectorsRaw) {
             const multiplier = weights.pop();
@@ -190,8 +209,19 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         const lines = await this.modelClient.exec("line_list", null);
         await Promise.all(lines.map(e => { this.modelClient.exec("line_free", { line_id: e.line_id }) }));
         console.log("CONNECTED");
+        const tryRecall = (session: Session, query?: string) => {
+            if (query === undefined) {
+                query = "";
+                for (let i = -1; query.length <= this.autoRecallQueryLength; i--) {
+                    query += session.line.tokens.at(i)?.piece ?? "";
+                }
+            };
+            if (query.length < this.minimalRecallQueryLength) { return; }
+            const memories = this.recall({ query }, 5, this.recallMinDistance);
+
+        };
         await Session.run(this.modelClient, {
-            system_message: `You are a helpful AI-assistant.`,
+            system_message: this.systemPrompt,
             user_message: `Как звали главного героя в произведении "Криптоэффект", от автора "Серая Зона"?`,
             stop_entropy: 7,
             async onstart({ content, text, next }) {
@@ -210,48 +240,84 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
 }
 
 
-
-export interface MainParams {
-    stdoutType: "ignored" | "inherit";
-    embeddingModel?: string | undefined;
-    embedderParams: EmbedderCreateParams,
-    modelParams: Omit<ModelClientParams, "conn">,
-    vectorIndexParams: Omit<Omit<IndexConfig, "dimensions">, "metric">,
-    memoryIndexSaveInterval: number,
-    randomSeed?: string,
-};
-export async function main(params: MainParams) {
+export const MainParamsScheme = z.object({
+    embeddingModel: z.string().optional(),
+    embedderParams: z.object({
+        port: z.int().min(0).max(65535),
+        host: z.string().optional(),
+        timeout: z.number().nonnegative().optional(),
+        fallbackStartServer: z.object({
+            modelFile: z.string(),
+            modelArgs: z.array(z.string()).optional(),
+            timeout: z.number().nonnegative(),
+            stdout: z.enum(["ignore", "inherit"]),
+            stderr: z.enum(["ignore", "inherit"]),
+        }).optional(),
+    }),
+    modelParams: z.object({
+        timeout: z.number().nonnegative(),
+        fallbackStartServer: z.object({
+            modelFile: z.string(),
+            modelParams: ModelParamsSchema,
+            timeout: z.number().nonnegative(),
+            stdout: z.enum(["ignore", "inherit"]),
+            stderr: z.enum(["ignore", "inherit"]),
+        }).optional(),
+    }),
+    vectorIndexParams: z.object({
+        quantization: z.enum(["f64", "f32", "bf16", "f16", "e5m2", "e4m3", "e3m2", "e2m3", "i8", "u8", "b1"]),
+        connectivity: z.number(),
+        expansion_add: z.number(),
+        expansion_search: z.number(),
+        multi: z.boolean(),
+    }),
+    vectorIndexThreads: z.number(),
+    memoryIndexSaveInterval: z.number(),
+    randomSeed: z.union([z.string(), z.null()]),
+    autoRecallQueryLength: z.number(),
+    minimalRecallQueryLength: z.number(),
+    recallMinDistance: z.number(),
+});
+export type MainParams = z.output<typeof MainParamsScheme>;
+export async function main(params?: MainParams) {
     const activeFolder = path.join(path.dirname(import.meta.dirname), "workspace");
     await fs.ensureDir(activeFolder);
-    const embedderParams = Object.assign({}, params.embedderParams);
+    if (params === undefined) {
+        const name = (await fs.readdir(activeFolder)).map(e => /^main-config\.(json[5c]?|toml|ya?ml|ini)$/.exec(e)?.[0]).filter(e => e !== null)[0];
+        if (name === undefined) {
+            throw new Error(`missing 'main-config.json' file': neither got params through arguments, nor got 'main-config'`);
+        }
+        params = z.parse(MainParamsScheme, readConfig(path.join(activeFolder, name)));
+    }
+    const llamaServerExecPath = path.join(path.dirname(import.meta.dirname), "binaries", "llama-b9844", "llama-server");
+    const embedderParams = Object.assign({}, params.embedderParams) as EmbedderCreateParams;
     if (embedderParams.fallbackStartServer !== undefined) {
-        embedderParams.fallbackStartServer = Object.assign(Object.assign({}, embedderParams.fallbackStartServer), {
-            stdout: params.stdoutType,
-            stderr: "inherit",
-        });
+        embedderParams.fallbackStartServer = Object.assign(Object.assign({}, embedderParams.fallbackStartServer), { llamaServerExecPath });
     }
     const embedder = await Embedder.create(embedderParams);
     const embeddingModels = await getModels(embedder.port, embedder.host);
-    let embeddingModel: string;
-    if (params.embeddingModel === undefined) {
-        if (embeddingModels.length !== 1) {
-            throw new Error(`cannot omit 'embeddingModel' parameter when embedder connection presents multiple models`)
-        } else {
+    let embeddingModel: string | undefined = params.embeddingModel;
+    if (embeddingModels.length > 1) {
+        throw new Error(`cannot omit 'embeddingModel' parameter when embedder connection presents multiple models`);
+    } else if (embeddingModels.length === 1) {
+        if (embeddingModel === undefined) {
             embeddingModel = embeddingModels[0]?.id as string;
         }
+    } else if (embeddingModels.length === 0) {
+        throw new Error(`embedder connection presents no models`);
     } else {
-        embeddingModel = params.embeddingModel;
+        embeddingModel = embeddingModels[0]?.id as string;
     }
     const embeddingModelInfo = embeddingModels.find(e => e.id === embeddingModel) as GetModelEntry;
     const modelClientParams = Object.assign(Object.assign({}, params.modelParams), { conn: { unix: path.join(activeFolder, "server-socket.sock") } });
     if (modelClientParams.fallbackStartServer !== undefined) {
-        modelClientParams.fallbackStartServer = Object.assign(Object.assign({}, modelClientParams.fallbackStartServer), {
-            stdout: params.stdoutType,
-            stderr: "inherit",
-        });
+        modelClientParams.fallbackStartServer = Object.assign(Object.assign({}, modelClientParams.fallbackStartServer));
     }
     const modelClient = await ModelClient.create(modelClientParams);
-    const vectorIndexParams: IndexConfig = Object.assign({ dimensions: embeddingModelInfo.meta.n_embd, metric: "ip" as MetricKind }, params.vectorIndexParams);
+    const vectorIndexParams: IndexConfig = Object.assign(
+        Object.assign({ dimensions: embeddingModelInfo.meta.n_embd, metric: "ip" as MetricKind }, params.vectorIndexParams),
+        { quantization: params.vectorIndexParams.quantization as ScalarKind }
+    );
     const vectorIndex = new Index(vectorIndexParams);
     const vectorIndexFile = path.join(activeFolder, "vector-index.usearch");
     const vectorIndexMetaFile = path.join(activeFolder, "vector-index.meta.json");
@@ -275,7 +341,9 @@ export async function main(params: MainParams) {
             vectorIndex.save(vectorIndexFile);
         }
     } else {
-        await fs.unlink(vectorIndexFile);
+        if (await fs.exists(vectorIndexFile)) {
+            await fs.unlink(vectorIndexFile);
+        }
         await fs.writeJson(vectorIndexMetaFile, vectorIndexParams, { encoding: "utf-8" });
         vectorIndex.save(vectorIndexFile);
     }
@@ -290,18 +358,24 @@ export async function main(params: MainParams) {
         await fs.writeJSON(memoryIdsFile, {}, { encoding: "utf-8" });
     }
     const vectorNormalizer = new VectorNormalizerLib(path.join(path.dirname(import.meta.dirname), "binaries", "utils", "libvector-normalizer.so"));
+    const systemPrompt = await fs.readFile(path.join(activeFolder, "system-prompt.md"), { encoding: "utf-8" });
     const app = new Agent({
         activeFolder,
         modelClient,
         embedder,
         vectorIndexFile,
         vectorIndex,
+        vectorIndexThreads: params.vectorIndexThreads,
         memoryIndexSaveInterval: params.memoryIndexSaveInterval,
         memory,
         memoryIdsFile,
         memoryIds,
         rng: new Yurandom(params.randomSeed ?? `${process.pid}_${Date.now()}`),
         vectorNormalizer,
+        systemPrompt,
+        autoRecallQueryLength: params.autoRecallQueryLength,
+        minimalRecallQueryLength: params.minimalRecallQueryLength,
+        recallMinDistance: params.recallMinDistance,
     });
     app.on("close", () => process.exit(0));
     await app.run();

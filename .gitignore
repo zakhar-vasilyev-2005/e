@@ -1,4 +1,7 @@
 binaries/
 node_modules/
 dist/
-workspace
+workspace/memory-ids.json
+workspace/server-socket.sock
+workspace/vector-index.meta.json
+workspace/vector-index.usearch

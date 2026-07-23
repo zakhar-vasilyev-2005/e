@@ -11,13 +11,23 @@ export type MemoKey = {
     keyContent: string,
 };
 export type MemoContent = {
-    keys: MemoKey[],
-    briefly: string,
-    body: string,
+    type: "memo" | "rule";
+    dependencies?: never,
+    failures?: never,
+    keys: MemoKey[];
+    briefly: string;
+    body: string;
+} | {
+    type: "task";
+    dependencies: `${string}.md`[];
+    failures: number,
+    keys?: never;
+    briefly: string;
+    body: string;
 };
 export type Memo = {
-    file: string,
-    name: string,
+    file: `/${string}.md`,
+    name: `${string}.md`,
     content: MemoContent,
     mtime: Date,
 };
@@ -27,7 +37,7 @@ export class MemoDB {
         await fs.ensureDir(dir);
         const tree = await getFileTree(dir);
         const memories = (await Promise.all(tree.map(async file => {
-            if (!file.endsWith(".memo.md")) { return []; }
+            if (/^[\s\S]*\.(memo|rule|task)\.md$/.exec(file) === null) { return []; }
             try {
                 return [await readMemo(dir, file)];
             } catch (e) {
@@ -42,7 +52,12 @@ export class MemoDB {
         const file = path.join(this.dir, name);
         await fs.writeFile(stringifyMemo(content), file, { encoding: "utf-8" });
         const mtime = (await fs.stat(file)).mtime
-        const memo = Object.freeze({ file, name, content: Object.freeze(content), mtime });
+        const memo: Memo = Object.freeze({
+            file: file as any,
+            name: name as any,
+            content: Object.freeze(content),
+            mtime,
+        });
         this.memories.push(memo);
         return memo;
     }
@@ -74,6 +89,7 @@ export async function readMemo(dir: string, file: string) {
 export function parseMemo(s: string): MemoContent {
     throw new Error("not implemented");
     return {
+        type: "memo",
         keys: [],
         briefly: "",
         body: "",

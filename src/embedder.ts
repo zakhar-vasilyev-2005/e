@@ -13,8 +13,8 @@ export interface EmbedderConnectParams {
     timeout?: number | undefined,
 };
 export interface EmbedderStartParams {
-    llamaServerExecPath?: string,
-    modelFile: "/mnt/120gb/Users/Public/LLMs/nomic-embed-text-v1.5.Q8_0.gguf",
+    llamaServerExecPath: string,
+    modelFile: string,
     modelArgs?: string[],
     stdout?: number | Stream | IOType | null,
     stderr?: number | Stream | IOType | null,
@@ -36,7 +36,6 @@ export class Embedder {
     }
     public static async start(params: EmbedderStartParams, port: number, host: string = "localhost") {
         let { llamaServerExecPath, modelFile, modelArgs, stdout, stderr, timeout } = params;
-        llamaServerExecPath ??= path.join(path.dirname(import.meta.dirname), "binaries", "llama-b9844", "llama-server");
         modelArgs ??= [];
         stdout ??= null;
         stderr ??= "inherit";

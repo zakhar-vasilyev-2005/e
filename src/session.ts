@@ -1,22 +1,37 @@
-import { ClientLine, ModelClient, type PullResult, type StopCondition } from "u-llm-server";
+import { ClientLine, ModelClient, packTokens, type PullResult, type StopCondition, type Token, type TokenSequence } from "u-llm-server";
 import { Yurandom } from 'yurandom/index.js';
 
 
 
 
 export type SessionHandler = (this: Session, event: PullResult) => void | Promise<void>;
-export type SessionInterval = {
+export interface SessionInterval {
     n_tokens: number,
     oninterval: SessionHandler,
 };
-export type SessionParams = {
+export interface SessionPattern {
+    pattern: RegExp,
+    onpattern: (...args: [...Parameters<SessionHandler>, RegExpExecArray]) => ReturnType<SessionHandler>,
+};
+export interface SessionDefaultHandlers {
+    onstart: SessionHandler,
+    onevery: SessionHandler,
+    onentropy: SessionHandler,
+    oneog: SessionHandler,
+};
+export const sessionDefaultHandlersNone: SessionDefaultHandlers = {
+    onstart: () => { },
+    onevery: () => { },
+    onentropy: () => { },
+    oneog: () => { },
+};
+export interface SessionParams extends Partial<SessionDefaultHandlers> {
+    state?: PullResult[],
     system_message?: string,
     user_message: string,
     stop_entropy?: number,
     intervals?: SessionInterval[],
-    onstart?: SessionHandler,
-    onentropy?: SessionHandler,
-    oneog?: SessionHandler,
+    patterns?: SessionPattern[],
 };
 export class Session {
     public static async run(client: ModelClient, params: SessionParams) {
@@ -38,7 +53,11 @@ export class Session {
     public constructor(public readonly line: ClientLine) { }
     public stopEntropy: number = 6;
     public running: boolean = false;
-    public intervals: (SessionInterval & { last_checked: number })[] = [];
+    public started: boolean = false;
+    public intervals: (SessionInterval & { last_checked: number })[] = []; // we can edit this manually
+    public patterns: SessionPattern[] = [];
+    public text: string = "";
+    public defaultHandlers: SessionDefaultHandlers = sessionDefaultHandlersNone;
     public async start(params: SessionParams) {
         await this.line.clear();
         await this.line.push({
@@ -53,11 +72,20 @@ export class Session {
         this.running = true;
         this.stopEntropy = params.stop_entropy ?? this.stopEntropy;
         this.intervals = (params.intervals ?? []).map(({ n_tokens, oninterval }) => ({ n_tokens, oninterval, last_checked: this.line.unparsedTokens.length }));;
+        this.patterns = (params.patterns ?? []).map(e => ({
+            pattern: new RegExp(e.pattern.source, e.pattern.flags.includes("g") ? e.pattern.flags : e.pattern.flags + "g"),
+            onpattern: e.onpattern,
+        }));
         const stopCondition: StopCondition = { max_entropy: this.stopEntropy, eog_stop: true };
-        let started = false;
+        this.defaultHandlers = {
+            onstart: params.onstart ?? (() => { }),
+            onentropy: params.onentropy ?? (() => { }),
+            onevery: params.onevery ?? (() => { }),
+            oneog: params.oneog ?? (() => { }),
+        };
         try {
             while (this.running) {
-                if (!started) {
+                if (!this.started) {
                     stopCondition.max_tokens = 0;
                 } else {
                     if (this.intervals.length !== 0) {
@@ -69,31 +97,49 @@ export class Session {
                         delete stopCondition.max_tokens;
                     }
                 }
-                const result = await this.line.pull(stopCondition);
-                if (!started) {
-                    if (params.onstart !== undefined) {
-                        await params.onstart.call(this, result)
-                    }
-                    started = true;
-                }
-                if (result.stopReasons.some(e => e === "max_tokens")) {
-                    await Promise.all(this.intervals.map(async e => {
-                        if (this.line.tokens.length - e.last_checked >= e.n_tokens) {
-                            e.last_checked += e.n_tokens;
-                            await e.oninterval.call(this, result);
-                        }
-                    }));
-                }
-                if (params.onentropy !== undefined && result.stopReasons.some(e => e === "max_entropy")) {
-                    await params.onentropy.call(this, result);
-                }
-                if (params.oneog !== undefined && result.stopReasons.some(e => e === "eog_stop")) {
-                    await params.oneog.call(this, result);
-                }
+                await this.pull(stopCondition);
             }
         } finally {
             this.running = false;
         }
+    }
+    public async pull(stopCondition: StopCondition) {
+        const result = await this.line.pull(stopCondition);
+        for (const piece of result.content) {
+            if (typeof piece === "string") {
+                this.text += piece;
+            } else {
+                this.text = "";
+            }
+        }
+        const d = this.defaultHandlers;
+        if (d.onstart !== undefined && !this.started) {
+            await d.onstart.call(this, result);
+        }
+        if (d.onevery !== undefined) {
+            await d.onevery.call(this, result);
+        }
+        if (result.stopReasons.some(e => e === "max_tokens")) {
+            await Promise.all(this.intervals.map(async e => {
+                if (this.line.tokens.length - e.last_checked >= e.n_tokens) {
+                    e.last_checked += e.n_tokens;
+                    await e.oninterval.call(this, result);
+                }
+            }));
+        }
+        await Promise.all(this.patterns.map(async p => {
+            const m = p.pattern.exec(this.text);
+            if (m !== null) {
+                await p.onpattern.call(this, result, m);
+            }
+        }));
+        if (d.onentropy !== undefined && result.stopReasons.some(e => e === "max_entropy")) {
+            await d.onentropy.call(this, result);
+        }
+        if (d.oneog !== undefined && result.stopReasons.some(e => e === "eog_stop")) {
+            await d.oneog.call(this, result);
+        }
+        this.started = true;
     }
     public async ask(stop: StopCondition, ...text: Parameters<ClientLine["push"]>) {
         await this.line.cancel();
@@ -102,8 +148,38 @@ export class Session {
         await this.line.trim(nTokens + result.tokens.length);
         return result;
     }
+    public async push(...content: Parameters<ClientLine["push"]>) {
+        await this.line.push(...content);
+    }
+    public async trimTokens(nTokens: number) {
+        await this.line.trim(nTokens, true);
+        this.text = packTokens(this.line.tokens).text ?? "";
+    }
+    public async trim(nChars: number) {
+        if (nChars <= 0) { return; }
+        const tokens: Token[] = [];
+        let tokensLength: number = 0;
+        for (let i = -1; tokensLength < nChars; i--) {
+            const token = this.line.tokens.at(i);
+            if (token === undefined) {
+                break;
+            }
+            tokensLength += token.piece.length;
+            tokens.push(token);
+        }
+        let suffix: string;
+        if (tokensLength > nChars) {
+            suffix = (tokens[0] as Token).piece.slice(0, tokensLength - nChars);
+        } else {
+            suffix = "";
+        }
+        await this.trimTokens(tokens.length);
+        await this.push(suffix);
+        this.text = packTokens(this.line.tokens).text ?? "";
+    }
     public stop() {
         this.running = false;
+        this.started = false;
     }
     public async close() {
         await this.line.free();
