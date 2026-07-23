@@ -186,6 +186,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         }
     }
     public async main() {
+
         const agent = this;
         const lines = await this.modelClient.exec("line_list", null);
         await Promise.all(lines.map(e => { this.modelClient.exec("line_free", { line_id: e.line_id }) }));
