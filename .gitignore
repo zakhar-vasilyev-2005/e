@@ -1,4 +1,4 @@
 binaries/
 node_modules/
 dist/
-server-socket.sock
+workspace

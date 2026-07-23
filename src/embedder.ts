@@ -100,7 +100,11 @@ export class Embedder {
     public async embeddingBatched<T extends string[]>(input: T): Promise<{ [i in keyof T]: number[] }> {
         const body = { input, model: "any" };
         const raw = await (await getResponse({ port: this.port, host: this.host }, "/embeddings", body, "POST")).json();
-        const result = z.array(z.object({ embedding: z.array(z.array(z.number())) })).parse(raw);
+        const result = z.array(z.object({ index: z.number(), embedding: z.array(z.array(z.number())) })).parse(raw);
+        if (result.length !== input.length) {
+            throw new Error(`bad server response: expected ${input.length} embeddings, got ${result.length}`);
+        }
+        result.sort((a, b) => a.index - b.index);
         return result.flatMap(e => e.embedding) as any;
     }
 }
@@ -120,10 +124,24 @@ export async function getResponse(conn: { port: number, host?: string }, endpoin
         throw e;
     }
 }
+export const GetModelEntrySchema = z.object({
+    id: z.string(),
+    aliases: z.array(z.string()),
+    tags: z.array(z.string()),
+    created: z.int(),
+    meta: z.object({
+        n_vocab: z.int().nonnegative(),
+        n_ctx: z.int().nonnegative(),
+        n_ctx_train: z.int().nonnegative(),
+        n_embd: z.int().nonnegative(),
+        n_params: z.int().nonnegative(),
+        size: z.int().nonnegative(),
+    }),
+});
+export type GetModelEntry = z.output<typeof GetModelEntrySchema>;
 export async function getModels(port: number, host: string = "localhost") {
     const raw = await (await getResponse({ port, host }, "/models", undefined, "GET")).json();
-    const models = z.object({ models: z.array(z.object({ name: z.string() })) }).parse(raw).models;
-    return models.map(e => e.name);
+    return z.object({ data: z.array(GetModelEntrySchema) }).parse(raw).data;
 }
 
 
