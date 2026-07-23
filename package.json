@@ -7,7 +7,7 @@
   "scripts": {
     "debug": "npm run build && npm start",
     "start": "node dist/main.js",
-    "build": "tsc"
+    "build": "(cd binaries/utils && make all) && tsc"
   },
   "keywords": [],
   "type": "module",

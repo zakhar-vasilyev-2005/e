@@ -12,6 +12,7 @@ import { cpus } from 'os'
 import z from 'zod';
 import { getFileTree } from './get-file-tree.js';
 import { el } from 'zod/locales';
+import { VectorNormalizerLib, type VectorNormalizer } from './vector-normalizer.js';
 
 
 
@@ -36,9 +37,9 @@ export type AgentParams = {
     memoryIdsFile: string,
     memoryIds: Record<string, string>,
     rng: Yurandom,
+    vectorNormalizer: VectorNormalizer,
 }
 export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
-    public readonly rng: Yurandom;
     public readonly activeFolder: string;
     public readonly modelClient: ModelClient;
     public readonly embedder: Embedder;
@@ -50,6 +51,8 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly memoryIdsFile: string;
     public readonly memoryIds: Record<string, string>;
     public readonly memoryIdsForName: Record<string, string[]>;
+    public readonly rng: Yurandom;
+    public readonly vectorNormalizer: VectorNormalizer;
     public constructor(params: AgentParams) {
         super();
         this.activeFolder = params.activeFolder;
@@ -68,6 +71,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             this.memoryIdsForName[name] = [...(this.memoryIdsForName[id] ?? []), id];
         }
         this.rng = params.rng;
+        this.vectorNormalizer = params.vectorNormalizer;
     }
     public beforeRecall: Promise<void>[] = [];
     public async recall(query: RecallQuery, amount: number = 5): Promise<{ memo: Memo, distance: number }[]> {
@@ -110,8 +114,11 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         return memories;
     }
     public async memorize(content: MemoContent, name: string) {
+        if (this.memory.getMemo(name) !== undefined) {
+            await this.forget(name);
+        }
         await this.memory.addMemo(content, name);
-        const ids = content.keys.map(() => {
+        const idsAndWeights = content.keys.map(({ weight }) => {
             let id: bigint;
             while (true) {
                 id = BigInt(this.rng.int(100, 1_000_000_000));
@@ -122,13 +129,18 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             this.memoryIds[String(id)] = name;
             this.memoryIdsForName[name] ??= [];
             this.memoryIdsForName[name].push(String(id));
-            return id;
+            return { id, weight };
         });
+        const ids = idsAndWeights.map(e => e.id);
+        const weights = idsAndWeights.map(e => e.weight);
         const vectors = new Float32Array(content.keys.length * this.vectorIndex.dimensions());
         const vectorsRaw = await this.embedder.embeddingBatched(content.keys.map(e => e.keyContent));
         let offset = 0;
         for (const vec of vectorsRaw) {
-            vectors.set(vec, offset);
+            const multiplier = weights.pop();
+            if (multiplier === undefined) { throw new Error(`unexpected situation: mismatch in weights count and embeddings count`); }
+            const normalizedVec = this.vectorNormalizer.normalize(vec, multiplier);
+            vectors.set(normalizedVec, offset);
             offset += vec.length;
         }
         this.vectorIndex.add(ids, vectors);
@@ -277,6 +289,7 @@ export async function main(params: MainParams) {
         memoryIds = {};
         await fs.writeJSON(memoryIdsFile, {}, { encoding: "utf-8" });
     }
+    const vectorNormalizer = new VectorNormalizerLib(path.join(path.dirname(import.meta.dirname), "binaries", "utils", "libvector-normalizer.so"));
     const app = new Agent({
         activeFolder,
         modelClient,
@@ -287,7 +300,8 @@ export async function main(params: MainParams) {
         memory,
         memoryIdsFile,
         memoryIds,
-        rng: new Yurandom(params.randomSeed ?? `${process.pid}_${Date.now()}`)
+        rng: new Yurandom(params.randomSeed ?? `${process.pid}_${Date.now()}`),
+        vectorNormalizer,
     });
     app.on("close", () => process.exit(0));
     await app.run();
