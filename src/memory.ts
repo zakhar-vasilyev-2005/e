@@ -1,11 +1,16 @@
 import fs from 'fs-extra';
 import path from 'path';
 import { getFileTree } from './get-file-tree.js';
-import * as YAML from 'yaml';
+import matter from 'gray-matter';
+import { parse as parseMarkdown } from 'marked';
+import TurndownService from 'turndown';
+import * as z from 'zod';
+import * as cheerio from 'cheerio';
+import { extractLetters } from './extract-letters.js';
 
 
 
-export const KEYS_SECTION_TITLE = "Recall keys";
+export const KEYS_SECTION_TITLE = "Recall keys"; // no special characters in terms of markdown and xmlselector's string values
 export const KEYS_SECTION_KEY_TITLE = (n: number) => `Key ${n}`;
 export const CONTENT_SECTION_TITLE = {
     fact: "Information",
@@ -95,16 +100,70 @@ export async function readMemo(dir: string, file: string) {
     }) as Memo;
 }
 export function parseMemo(s: string): MemoContent {
-    throw new Error("not implemented");
-    return {
-        type: "fact",
-        keys: [],
-        briefly: "",
-        body: "",
+    const { content: fullContent, data: rawHeader } = matter(s);
+    const header = z.parse(MemoStringHeaderScheme, rawHeader);
+    const { keys, body } = (() => {
+        const $ = cheerio.load(parseMarkdown(fullContent, { async: false }));
+        const turndownService = new TurndownService({
+            headingStyle: "atx",
+            bulletListMarker: "-",
+            codeBlockStyle: "fenced",
+            fence: "```",
+            emDelimiter: "*",
+            strongDelimiter: "**",
+            linkStyle: "inlined",
+            linkReferenceStyle: "full",
+            hr: "---",
+        });
+        const bodyHeader = $("h2").filter((i, e) => extractLetters($(e).text()) === extractLetters(CONTENT_SECTION_TITLE[header.type]))
+        const bodyHtml = $(bodyHeader).nextUntil("h1,h2").toString();
+        const body = turndownService.turndown(bodyHtml);
+        if (header.type === "task") {
+            return { keys: [], body };
+        }
+        const sectionHeader = $(`h2`).filter((i, el) => extractLetters($(el).text()) === extractLetters(KEYS_SECTION_TITLE));
+        const headers = $(sectionHeader).nextUntil("h2,h1").filter((i, e) => e.tagName === "h3").toArray();
+        const weights = Object.fromEntries(Object.entries(header.key_weights)
+            .map(([k, v]) => [extractLetters(k), /^(fixed\s*)?([\s\S]*)$/.exec(String(v))] as [string, RegExpExecArray])
+            .map(([k, v]) => [k, v[1] ? { fixed: true, weight: parseFloat(v[2] ?? "") } : { fixed: true, weight: parseFloat(v[2] ?? "") }])
+        )
+        const keys = headers.map(key => {
+            const { weight, fixed } = weights[extractLetters($(key).text())] ?? { fixed: false, weight: 1.0 };
+            const contentHtml = $(key).nextUntil("h3,h2,h1").toString();
+            const content = turndownService.turndown(contentHtml);
+            return { keyContent: content, weight, weightFixed: fixed } as MemoKey;
+        });
+        return { keys, body };
+    })();
+    return header.type === "task" ? {
+        type: header.type,
+        briefly: header.description,
+        dependencies: header.dependencies as any[],
+        failures: header.failures,
+        body,
+    } : {
+        type: header.type,
+        keys,
+        briefly: header.description,
+        body,
     };
 }
-export function stringifyMemo(content: MemoContent): string {
-    let header = content.type === "task" ? {
+export const MemoStringHeaderScheme = z.discriminatedUnion("type", [
+    z.object({
+        type: z.enum(["rule", "fact"]),
+        description: z.string(),
+        key_weights: z.record(z.string(), z.union([z.string(), z.number()]))
+    }),
+    z.object({
+        type: z.literal("task"),
+        description: z.string(),
+        dependencies: z.array(z.string()),
+        failures: z.int().nonnegative(),
+    })
+]);
+export type MemoStringHeader = z.output<typeof MemoStringHeaderScheme>;
+export function generateHeader(content: MemoContent): MemoStringHeader {
+    return content.type === "task" ? {
         type: content.type,
         description: content.briefly,
         dependencies: content.dependencies,
@@ -113,17 +172,20 @@ export function stringifyMemo(content: MemoContent): string {
         type: content.type,
         description: content.briefly,
         key_weights: Object.fromEntries((content.keys ?? []).map(
-            (e, i) => [KEYS_SECTION_KEY_TITLE(i + 1), e.weightFixed ? `fixed ${e.weight}` : `${e.weight}`]
+            (e, i) => [KEYS_SECTION_KEY_TITLE(i + 1), e.weightFixed ? `fixed ${e.weight}` : e.weight]
         )),
     };
-    return [
-        `---\n${YAML.stringify(header).trim()}\n---\n# ${content.briefly}`,
-        `## ${CONTENT_SECTION_TITLE[content.type]}\n${content.body.trim()}`,
+}
+export function stringifyMemo(content: MemoContent): string {
+    const text = [
+        `## ${CONTENT_SECTION_TITLE[content.type]}\n${content.body.trim()}\n`,
         ...(content.keys?.length === 0 ? [] : [
-            `## ${KEYS_SECTION_TITLE}\n` + (content.keys ?? []).map((e, i) => `### ${KEYS_SECTION_KEY_TITLE(i + 1)}\n${e.keyContent.trim()}`).join("\n")
+            `## ${KEYS_SECTION_TITLE}`, ...(content.keys ?? []).map((e, i) => `### ${KEYS_SECTION_KEY_TITLE(i + 1)}\n${e.keyContent.trim()}`)
         ]),
     ].join("\n");
+    return matter.stringify({ content: text }, generateHeader(content));
 }
+
 
 
 

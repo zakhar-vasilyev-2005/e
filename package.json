@@ -14,10 +14,15 @@
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^26.1.1",
+    "@types/turndown": "^5.0.6",
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "cheerio": "^1.2.0",
     "fs-extra": "^11.3.6",
+    "gray-matter": "^4.0.3",
+    "marked": "^18.0.7",
+    "turndown": "^7.2.4",
     "u-llm-server": "^1.8.1",
     "usearch": "^2.26.0",
     "yaml": "^2.9.0",
