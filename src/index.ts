@@ -1,20 +1,17 @@
 import EventEmitter from 'events';
-import { ModelClient, ModelParamsSchema, type ModelClientParams } from 'u-llm-server';
+import { ModelClient, ModelParamsSchema, type ContentElem, type PullResult } from 'u-llm-server';
 import { createFreeEvent } from './event-util.js';
 import { Yurandom } from 'yurandom/index.js';
 import { Session } from './session.js';
-import { Embedder, getModels, type EmbedderCreateParams, type EmbedderStartParams, type GetModelEntry } from './embedder.js';
+import { Embedder, getModels, type EmbedderCreateParams, type GetModelEntry } from './embedder.js';
 import { Index, MetricKind, ScalarKind, type IndexConfig } from 'usearch';
 import path from 'path';
 import fs from 'fs-extra';
 import { MemoDB, readMemo, type Memo, type MemoContent } from './memory.js';
-import { cpus } from 'os'
 import z from 'zod';
 import { getFileTree } from './get-file-tree.js';
-import { el } from 'zod/locales';
 import { VectorNormalizerLib, type VectorNormalizer } from './vector-normalizer.js';
 import { readConfig } from './config.js';
-import type { IOType } from 'child_process';
 
 
 
@@ -42,6 +39,11 @@ export type AgentParams = {
     rng: Yurandom,
     vectorNormalizer: VectorNormalizer,
     systemPrompt: string,
+    userMessageInstruction: string,
+    selectMemoriesPrefix: string,
+    selectMemoriesSuffix: string,
+    extractedMemoriesPrefix: string,
+    extractedMemoriesSuffix: string,
     autoRecallQueryLength: number,
     minimalRecallQueryLength: number,
     recallMinDistance: number,
@@ -62,6 +64,11 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly rng: Yurandom;
     public readonly vectorNormalizer: VectorNormalizer;
     public readonly systemPrompt: string;
+    public readonly userMessageInstruction: string;
+    public readonly selectMemoriesPrefix: string;
+    public readonly selectMemoriesSuffix: string;
+    public readonly extractedMemoriesPrefix: string;
+    public readonly extractedMemoriesSuffix: string;
     public readonly autoRecallQueryLength: number;
     public readonly minimalRecallQueryLength: number;
     public readonly recallMinDistance: number;
@@ -86,12 +93,17 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         this.rng = params.rng;
         this.vectorNormalizer = params.vectorNormalizer;
         this.systemPrompt = params.systemPrompt;
+        this.userMessageInstruction = params.userMessageInstruction;
+        this.selectMemoriesPrefix = params.selectMemoriesPrefix;
+        this.selectMemoriesSuffix = params.selectMemoriesSuffix;
+        this.extractedMemoriesPrefix = params.extractedMemoriesPrefix;
+        this.extractedMemoriesSuffix = params.extractedMemoriesSuffix;
         this.autoRecallQueryLength = params.autoRecallQueryLength;
         this.minimalRecallQueryLength = params.minimalRecallQueryLength;
         this.recallMinDistance = params.recallMinDistance;
     }
     public beforeRecall: Promise<void>[] = [];
-    public async recall(query: RecallQuery, maxCount: number = 5, minDistance: number = 0): Promise<{ memo: Memo, distance: number }[]> {
+    public async findMemos(query: RecallQuery, maxCount: number = 5, minDistance: number = 0): Promise<{ memo: Memo, distance: number }[]> {
         if (query.name !== undefined) {
             const memo = this.memory.getMemo(query.name);
             return memo === undefined ? [] : [{ memo, distance: 1 }];
@@ -127,15 +139,15 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         }
         this.vectorIndex.remove(toDelete);
         if (toDelete.length !== 0) {
-            return await this.recall(query, maxCount);
+            return await this.findMemos(query, maxCount);
         }
         return memories.filter(e => e.distance >= minDistance);
     }
-    public async memorize(content: MemoContent, name: string) {
+    public async addMemo(content: MemoContent, name: `${string}.md`) {
         if (this.memory.getMemo(name) !== undefined) {
-            await this.forget(name);
+            await this.removeMemo(name);
         }
-        await this.memory.addMemo(content, name);
+        const memo = await this.memory.addMemo(content, name);
         const keys = content.keys ?? [];
         const idsAndWeights = keys.map(({ weight }) => {
             let id: bigint;
@@ -163,11 +175,12 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             offset += vec.length;
         }
         this.vectorIndex.add(ids, vectors);
+        return memo;
     }
-    public async forget(memoName: string) {
-        await this.memory.removeMemo(memoName);
-        const ids = this.memoryIdsForName[memoName] ?? [];
-        delete this.memoryIdsForName[memoName];
+    public async removeMemo(name: `${string}.md`) {
+        await this.memory.removeMemo(name);
+        const ids = this.memoryIdsForName[name] ?? [];
+        delete this.memoryIdsForName[name];
         for (const id of ids) {
             delete this.memoryIds[id];
         }
@@ -183,7 +196,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             const memo = initialMemories[file];
             if (memo === undefined || memo.mtime.getTime() >= vectorIndexMtimeMs) {
                 const loadedMemo = await readMemo(this.memory.dir, file);
-                this.memorize(loadedMemo.content, loadedMemo.name);
+                this.addMemo(loadedMemo.content, loadedMemo.name);
                 return;
             }
         }));
@@ -205,34 +218,106 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         }
     }
     public async main() {
-        const agent = this;
         const lines = await this.modelClient.exec("line_list", null);
         await Promise.all(lines.map(e => { this.modelClient.exec("line_free", { line_id: e.line_id }) }));
         console.log("CONNECTED");
-        const tryRecall = (session: Session, query?: string) => {
-            if (query === undefined) {
-                query = "";
-                for (let i = -1; query.length <= this.autoRecallQueryLength; i--) {
-                    query += session.line.tokens.at(i)?.piece ?? "";
-                }
-            };
-            if (query.length < this.minimalRecallQueryLength) { return; }
-            const memories = this.recall({ query }, 5, this.recallMinDistance);
-
-        };
+        await this.runTask((await this.addMemo({
+            body: "",
+            briefly: "",
+            type: "task",
+            dependencies: [],
+            failures: 0,
+        }, "main-task.task.md")).content as any);
+    }
+    public async runTask(task: MemoContent & { type: "task" }) {
+        const agent = this;
+        let stop = false;
+        let startEvent: PullResult | undefined = undefined;
         await Session.run(this.modelClient, {
             system_message: this.systemPrompt,
-            user_message: `Как звали главного героя в произведении "Криптоэффект", от автора "Серая Зона"?`,
+            user_message: await this.formatTask(task),
             stop_entropy: 7,
-            async onstart({ content, text, next }) {
-                if (typeof text !== "string") { throw new Error(`no text output at session start was found`); }
-                console.log(await agent.embedder.embedding(text));
-                this.stop();
+            async onstart(event) {
+                const recallResult = await agent.tryRecall(this);
+                await this.line.cancel();
+                await this.push(
+                    recallResult.length === 0 ? "" : "\n" + recallResult,
+                    agent.modelClient.prefixes.userToAssistant,
+                );
+                stop = true;
+                startEvent = event;
+            },
+            async onevery(event) {
+                console.log({ text: this.text });
+                if (stop && event !== startEvent) {
+                    this.stop();
+                }
             },
             async oneog() {
+                throw new Error(`not implemented`);
                 this.stop();
             }
         });
+    }
+    public async askRelevant(session: Session, memories: MemoContent[]) {
+        const rng = new Yurandom("askRelevant");
+        for (let attempt = 0; attempt < 10; attempt++) {
+            const seed = rng.int(1, 32000);
+            const nTokens = session.line.tokens.length;
+            const promptSize = await session.line.push([
+                this.selectMemoriesPrefix.trim(),
+                ...memories.map((e, i) => `${i + 1}. ${e}`),
+                this.selectMemoriesSuffix.trim(),
+            ].join("\n").trim());
+            const pattern = memories.map((_, i, a) => `([${i + 1}]${i + 1 === a.length ? "" : "[,][ ]*"})?`);
+            await session.line.setSampler([
+                { type: "grammar", grammar: `root ::= "none" | ( ${pattern.join(" ")} )`, root: "root" },
+                { type: "dist", seed },
+            ], nTokens + promptSize);
+            const answer = await session.line.pull({ eog_stop: true, max_tokens: 50 });
+            await session.line.trim(nTokens - session.line.tokens.length);
+            const m = /^\s*(none|((\d+,\s*)*\d+))\s*$/.exec(answer.text ?? "");
+            if (m === null) { continue; }
+            session.updateText();
+            return m[1] === "none" ? [] : (m[1] ?? "").split(",").map(e => parseInt(e.trim()));
+        }
+        throw new Error(`cannot parse model's output`);
+    }
+    public async tryRecall(session: Session, query?: string) {
+        if (query === undefined) {
+            query = "";
+            for (let i = -1; query.length <= this.autoRecallQueryLength; i--) {
+                query += session.line.tokens.at(i)?.piece ?? "";
+            }
+        };
+        if (query.length < this.minimalRecallQueryLength) { return ""; }
+        const recallResult = await this.findMemos({ query }, 5, this.recallMinDistance);
+        const indicesApproved = await this.askRelevant(session, recallResult.map(e => e.memo.content));
+        const memories = indicesApproved.map(i => recallResult[i]?.memo).filter(e => e !== undefined);
+        return memories.length === 0 ? "" : this.formatRecallResult(memories.map(e => e.content));
+    };
+    public formatRecallResult(memories: MemoContent[]) {
+        const chunks = memories.map(e => {
+            if (e.type === "fact") {
+                return `<memory_context>\n\t${e.body}\n</memory_context>`;
+            } else if (e.type === "rule") {
+                return `<skill_instruction>\n\t${e.body}\n</skill_instruction>`;
+            }
+            return "";
+        });
+        const body = chunks.filter(e => e.length !== 0).map(e => e.trim()).join("\n");
+        return `${this.extractedMemoriesPrefix.trim()}\n<extracted_memories>\n${body}\n</extracted_memories>\n${this.extractedMemoriesSuffix.trim()}`;
+    }
+    public async formatTask(task: MemoContent & { type: "task" }) {
+        const dependencies = (await Promise.all(task.dependencies.map(name => this.memory.getMemo(name)))).filter(e => e !== undefined);
+        return [
+            "<active_task>",
+            `<name> ${task.briefly.trim()} </name>`,
+            "<goal>", task.body.trim(), "</goal>",
+            ...(dependencies.length === 0 ? [] : ["<dependencies>", ...dependencies.map((e, i) => `${i + 1}. ${e.content.briefly}`), "</dependencies>"]),
+            "<instruction>", this.userMessageInstruction.trim(), "</instruction>",
+            "</active_task>"
+        ].join("\n").trim();
     }
     public readonly close = createFreeEvent("close", async () => {
         await this.modelClient.close();
@@ -283,7 +368,7 @@ export async function main(params?: MainParams) {
     const activeFolder = path.join(path.dirname(import.meta.dirname), "workspace");
     await fs.ensureDir(activeFolder);
     if (params === undefined) {
-        const name = (await fs.readdir(activeFolder)).map(e => /^main-config\.(json[5c]?|toml|ya?ml|ini)$/.exec(e)?.[0]).filter(e => e !== null)[0];
+        const name = (await fs.readdir(activeFolder)).map(e => /^main-config\.(json[5c]?|toml|ya?ml|ini)$/.exec(e)?.[0]).filter(e => typeof e === 'string')[0];
         if (name === undefined) {
             throw new Error(`missing 'main-config.json' file': neither got params through arguments, nor got 'main-config'`);
         }
@@ -358,7 +443,6 @@ export async function main(params?: MainParams) {
         await fs.writeJSON(memoryIdsFile, {}, { encoding: "utf-8" });
     }
     const vectorNormalizer = new VectorNormalizerLib(path.join(path.dirname(import.meta.dirname), "binaries", "utils", "libvector-normalizer.so"));
-    const systemPrompt = await fs.readFile(path.join(activeFolder, "system-prompt.md"), { encoding: "utf-8" });
     const app = new Agent({
         activeFolder,
         modelClient,
@@ -372,7 +456,12 @@ export async function main(params?: MainParams) {
         memoryIds,
         rng: new Yurandom(params.randomSeed ?? `${process.pid}_${Date.now()}`),
         vectorNormalizer,
-        systemPrompt,
+        systemPrompt: await fs.readFile(path.join(activeFolder, "system-prompt.md"), { encoding: "utf-8" }),
+        userMessageInstruction: await fs.readFile(path.join(activeFolder, "usermessage-instruction.md"), { encoding: "utf-8" }),
+        selectMemoriesPrefix: await fs.readFile(path.join(activeFolder, "select-memories-prefix.md"), { encoding: "utf-8" }),
+        selectMemoriesSuffix: await fs.readFile(path.join(activeFolder, "select-memories-suffix.md"), { encoding: "utf-8" }),
+        extractedMemoriesPrefix: await fs.readFile(path.join(activeFolder, "extracted-memories-prefix.md"), { encoding: "utf-8" }),
+        extractedMemoriesSuffix: await fs.readFile(path.join(activeFolder, "extracted-memories-suffix.md"), { encoding: "utf-8" }),
         autoRecallQueryLength: params.autoRecallQueryLength,
         minimalRecallQueryLength: params.minimalRecallQueryLength,
         recallMinDistance: params.recallMinDistance,

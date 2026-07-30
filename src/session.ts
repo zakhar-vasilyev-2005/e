@@ -65,8 +65,7 @@ export class Session {
                 ...(params.system_message === undefined ? [] : [
                     { role: "system" as "system", content: params.system_message }
                 ]),
-                { role: "user", content: params.user_message },
-                { role: "assistant", content: "\uE001" },
+                { role: "user", content: params.user_message + "\uE001" },
             ]
         });
         this.running = true;
@@ -78,7 +77,9 @@ export class Session {
         }));
         const stopCondition: StopCondition = { max_entropy: this.stopEntropy, eog_stop: true };
         this.defaultHandlers = {
-            onstart: params.onstart ?? (() => { }),
+            onstart: params.onstart ?? (function () {
+                this.push(this.line.client.prefixes.userToAssistant);
+            }),
             onentropy: params.onentropy ?? (() => { }),
             onevery: params.onevery ?? (() => { }),
             oneog: params.oneog ?? (() => { }),
@@ -152,6 +153,7 @@ export class Session {
         await this.line.push(...content);
     }
     public async trimTokens(nTokens: number) {
+        if (nTokens <= 0) { return; }
         await this.line.trim(nTokens, true);
         this.text = packTokens(this.line.tokens).text ?? "";
     }
@@ -175,6 +177,9 @@ export class Session {
         }
         await this.trimTokens(tokens.length);
         await this.push(suffix);
+        this.updateText();
+    }
+    public updateText() {
         this.text = packTokens(this.line.tokens).text ?? "";
     }
     public stop() {
