@@ -5,3 +5,4 @@ workspace/memory-ids.json
 workspace/server-socket.sock
 workspace/vector-index.meta.json
 workspace/vector-index.usearch
+workspace/memo/temp/

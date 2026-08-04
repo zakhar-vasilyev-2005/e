@@ -50,11 +50,12 @@ export class MemoDB {
         await fs.ensureDir(dir);
         const tree = await getFileTree(dir);
         const memories = (await Promise.all(tree.map(async file => {
-            if (/^[\s\S]*\.(fact|rule|task)\.md$/.exec(file) === null) { return []; }
+            if (/^[\s\S]*\.md$/.exec(file) === null) { return []; }
             try {
                 return [await readMemo(dir, file)];
             } catch (e) {
                 await fs.rename(file, file + ".error")
+                console.error(e);
                 return [];
             }
         }))).flat();
@@ -63,8 +64,9 @@ export class MemoDB {
     public constructor(public readonly dir: string, protected memories: Memo[] = []) { }
     public async addMemo(content: MemoContent, name: string) {
         const file = path.join(this.dir, name);
-        await fs.writeFile(stringifyMemo(content), file, { encoding: "utf-8" });
-        const mtime = (await fs.stat(file)).mtime
+        await fs.ensureDir(path.dirname(file));
+        await fs.writeFile(file, stringifyMemo(content), { encoding: "utf-8" });
+        const mtime = (await fs.stat(file)).mtime;
         const memo: Memo = Object.freeze({
             file: file as any,
             name: name as any,

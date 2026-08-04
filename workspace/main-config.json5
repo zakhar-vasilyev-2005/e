@@ -1,5 +1,4 @@
 {
-  "stdoutType": "inherit",
   "embedderParams": {
     "port": 39512,
     "timeout": 500,
@@ -14,7 +13,7 @@
         "none"
       ],
       "timeout": 50000,
-      "stdout": "inherit",
+      "stdout": "ignore",
       "stderr": "inherit"
     }
   },
@@ -30,7 +29,7 @@
         "use_extra_bufts": true
       },
       "timeout": 100000,
-      "stdout": "inherit",
+      "stdout": "ignore",
       "stderr": "inherit"
     }
   },
@@ -46,5 +45,18 @@
   "memoryIndexSaveInterval": 10000,
   "autoRecallQueryLength": 800,
   "minimalRecallQueryLength": 100,
-  "recallMinDistance": 0.95
+  "recallMinDistance": 0.95,
+  "recallMaxMemories": 10,
+  "taskSamplerMain": [
+    {
+      "type": "greedy"
+    }
+  ],
+  "userMessageInstruction": "", // TODO!
+  "selectMemoriesPrefix": "", // TODO!
+  "selectMemoriesSuffix": "", // TODO!
+  "extractedMemoriesPrefix": "", // TODO!
+  "extractedMemoriesSuffix": "", // TODO!
+  "extractionInstruction": "Please, select relevant facts/instructions to get full information.\nSelect in form of either 'none' or list of selected indices (numbers).\nPut the answer between <SELECT> and </SELECT> tags.",
+  "extractionInstructionFirst": "Please, select facts/instructions that are relevant to current task.\nSelect in form of either 'none' or list of selected indices (numbers).\nPut the answer between <SELECT> and </SELECT> tags.",
 }

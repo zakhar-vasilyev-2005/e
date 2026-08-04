@@ -1,0 +1,763 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "embeddingModel": {
+            "type": "string"
+        },
+        "embedderParams": {
+            "type": "object",
+            "properties": {
+                "port": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 65535
+                },
+                "host": {
+                    "type": "string"
+                },
+                "timeout": {
+                    "type": "number",
+                    "minimum": 0
+                },
+                "fallbackStartServer": {
+                    "type": "object",
+                    "properties": {
+                        "modelFile": {
+                            "type": "string"
+                        },
+                        "modelArgs": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "timeout": {
+                            "type": "number",
+                            "minimum": 0
+                        },
+                        "stdout": {
+                            "type": "string",
+                            "enum": [
+                                "ignore",
+                                "inherit"
+                            ]
+                        },
+                        "stderr": {
+                            "type": "string",
+                            "enum": [
+                                "ignore",
+                                "inherit"
+                            ]
+                        }
+                    },
+                    "required": [
+                        "modelFile",
+                        "timeout",
+                        "stdout",
+                        "stderr"
+                    ],
+                    "additionalProperties": false
+                }
+            },
+            "required": [
+                "port"
+            ],
+            "additionalProperties": false
+        },
+        "modelParams": {
+            "type": "object",
+            "properties": {
+                "timeout": {
+                    "type": "number",
+                    "minimum": 0
+                },
+                "fallbackStartServer": {
+                    "type": "object",
+                    "properties": {
+                        "modelFile": {
+                            "type": "string"
+                        },
+                        "modelParams": {
+                            "type": "object",
+                            "properties": {
+                                "progress_callback_interval": {
+                                    "type": "number"
+                                },
+                                "n_gpu_layers": {
+                                    "type": "number"
+                                },
+                                "split_mode": {
+                                    "type": "string",
+                                    "enum": [
+                                        "none",
+                                        "layer",
+                                        "row",
+                                        "tensor"
+                                    ]
+                                },
+                                "main_gpu": {
+                                    "type": "number"
+                                },
+                                "tensor_split": {
+                                    "minItems": 0,
+                                    "type": "array",
+                                    "items": {
+                                        "type": "number"
+                                    }
+                                },
+                                "vocab_only": {
+                                    "type": "boolean"
+                                },
+                                "use_mmap": {
+                                    "type": "boolean"
+                                },
+                                "use_direct_io": {
+                                    "type": "boolean"
+                                },
+                                "use_mlock": {
+                                    "type": "boolean"
+                                },
+                                "check_tensors": {
+                                    "type": "boolean"
+                                },
+                                "use_extra_bufts": {
+                                    "type": "boolean"
+                                },
+                                "no_host": {
+                                    "type": "boolean"
+                                },
+                                "no_alloc": {
+                                    "type": "boolean"
+                                }
+                            },
+                            "additionalProperties": false
+                        },
+                        "timeout": {
+                            "type": "number",
+                            "minimum": 0
+                        },
+                        "stdout": {
+                            "type": "string",
+                            "enum": [
+                                "ignore",
+                                "inherit"
+                            ]
+                        },
+                        "stderr": {
+                            "type": "string",
+                            "enum": [
+                                "ignore",
+                                "inherit"
+                            ]
+                        }
+                    },
+                    "required": [
+                        "modelFile",
+                        "modelParams",
+                        "timeout",
+                        "stdout",
+                        "stderr"
+                    ],
+                    "additionalProperties": false
+                }
+            },
+            "required": [
+                "timeout"
+            ],
+            "additionalProperties": false
+        },
+        "vectorIndexParams": {
+            "type": "object",
+            "properties": {
+                "quantization": {
+                    "type": "string",
+                    "enum": [
+                        "f64",
+                        "f32",
+                        "bf16",
+                        "f16",
+                        "e5m2",
+                        "e4m3",
+                        "e3m2",
+                        "e2m3",
+                        "i8",
+                        "u8",
+                        "b1"
+                    ]
+                },
+                "connectivity": {
+                    "type": "number"
+                },
+                "expansion_add": {
+                    "type": "number"
+                },
+                "expansion_search": {
+                    "type": "number"
+                },
+                "multi": {
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "quantization",
+                "connectivity",
+                "expansion_add",
+                "expansion_search",
+                "multi"
+            ],
+            "additionalProperties": false
+        },
+        "vectorIndexThreads": {
+            "type": "number"
+        },
+        "memoryIndexSaveInterval": {
+            "type": "number"
+        },
+        "randomSeed": {
+            "anyOf": [
+                {
+                    "type": "string"
+                },
+                {
+                    "type": "null"
+                }
+            ]
+        },
+        "autoRecallQueryLength": {
+            "type": "number"
+        },
+        "minimalRecallQueryLength": {
+            "type": "number"
+        },
+        "recallMinDistance": {
+            "type": "number"
+        },
+        "recallMaxMemories": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+        },
+        "taskSamplerMain": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "greedy"
+                            }
+                        },
+                        "required": [
+                            "type"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "dist"
+                            },
+                            "seed": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 32000
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "seed"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "top_k"
+                            },
+                            "k": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "k"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "top_p"
+                            },
+                            "p": {
+                                "type": "number"
+                            },
+                            "min_keep": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "p",
+                            "min_keep"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "min_p"
+                            },
+                            "p": {
+                                "type": "number"
+                            },
+                            "min_keep": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "p",
+                            "min_keep"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "typical"
+                            },
+                            "p": {
+                                "type": "number"
+                            },
+                            "min_keep": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "p",
+                            "min_keep"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "temp"
+                            },
+                            "t": {
+                                "type": "number"
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "t"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "temp_ext"
+                            },
+                            "t": {
+                                "type": "number"
+                            },
+                            "delta": {
+                                "type": "number"
+                            },
+                            "exponent": {
+                                "type": "number"
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "t",
+                            "delta",
+                            "exponent"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "xtc"
+                            },
+                            "p": {
+                                "type": "number"
+                            },
+                            "t": {
+                                "type": "number"
+                            },
+                            "min_keep": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                            },
+                            "seed": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 32000
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "p",
+                            "t",
+                            "min_keep",
+                            "seed"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "top_n_sigma"
+                            },
+                            "n": {
+                                "type": "number"
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "n"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "mirostat"
+                            },
+                            "seed": {
+                                "type": "number"
+                            },
+                            "tau": {
+                                "type": "number"
+                            },
+                            "eta": {
+                                "type": "number"
+                            },
+                            "m": {
+                                "type": "number"
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "seed",
+                            "tau",
+                            "eta",
+                            "m"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "mirostat_v2"
+                            },
+                            "seed": {
+                                "type": "number"
+                            },
+                            "tau": {
+                                "type": "number"
+                            },
+                            "eta": {
+                                "type": "number"
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "seed",
+                            "tau",
+                            "eta"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "grammar"
+                            },
+                            "grammar": {
+                                "type": "string"
+                            },
+                            "root": {
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "grammar",
+                            "root"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "grammar_lazy_patterns"
+                            },
+                            "grammar": {
+                                "type": "string"
+                            },
+                            "root": {
+                                "type": "string"
+                            },
+                            "triggers": {
+                                "type": "array",
+                                "items": {
+                                    "anyOf": [
+                                        {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                        },
+                                        {
+                                            "type": "string"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "grammar",
+                            "root",
+                            "triggers"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "penalties"
+                            },
+                            "last_n": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                            },
+                            "repeat": {
+                                "type": "number"
+                            },
+                            "freq": {
+                                "type": "number"
+                            },
+                            "present": {
+                                "type": "number"
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "last_n"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "dry"
+                            },
+                            "n_ctx_train": {
+                                "type": "number"
+                            },
+                            "multiplier": {
+                                "type": "number"
+                            },
+                            "base": {
+                                "type": "number"
+                            },
+                            "allowed_length": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                            },
+                            "penalty_last_n": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                            },
+                            "seq_breakers": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "n_ctx_train",
+                            "multiplier",
+                            "base",
+                            "allowed_length",
+                            "penalty_last_n",
+                            "seq_breakers"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "adaptive_p"
+                            },
+                            "target": {
+                                "type": "number"
+                            },
+                            "decay": {
+                                "type": "number"
+                            },
+                            "seed": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 32000
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "target",
+                            "decay",
+                            "seed"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "logit_bias"
+                            },
+                            "logit_bias": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "token": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                        },
+                                        "bias": {
+                                            "type": "number"
+                                        }
+                                    },
+                                    "required": [
+                                        "token",
+                                        "bias"
+                                    ],
+                                    "additionalProperties": false
+                                }
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "logit_bias"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "const": "infill"
+                            }
+                        },
+                        "required": [
+                            "type"
+                        ],
+                        "additionalProperties": false
+                    }
+                ]
+            }
+        },
+        "userMessageInstruction": {
+            "type": "string"
+        },
+        "selectMemoriesPrefix": {
+            "type": "string"
+        },
+        "selectMemoriesSuffix": {
+            "type": "string"
+        },
+        "extractedMemoriesPrefix": {
+            "type": "string"
+        },
+        "extractedMemoriesSuffix": {
+            "type": "string"
+        },
+        "extractionInstruction": {
+            "type": "string"
+        },
+        "extractionInstructionFirst": {
+            "type": "string"
+        }
+    },
+    "required": [
+        "embedderParams",
+        "modelParams",
+        "vectorIndexParams",
+        "vectorIndexThreads",
+        "memoryIndexSaveInterval",
+        "randomSeed",
+        "autoRecallQueryLength",
+        "minimalRecallQueryLength",
+        "recallMinDistance",
+        "recallMaxMemories",
+        "taskSamplerMain",
+        "userMessageInstruction",
+        "selectMemoriesPrefix",
+        "selectMemoriesSuffix",
+        "extractedMemoriesPrefix",
+        "extractedMemoriesSuffix",
+        "extractionInstruction",
+        "extractionInstructionFirst"
+    ],
+    "additionalProperties": false
+}

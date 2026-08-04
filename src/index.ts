@@ -1,5 +1,5 @@
 import EventEmitter from 'events';
-import { ModelClient, ModelParamsSchema, type ContentElem, type PullResult } from 'u-llm-server';
+import { ClientLine, ModelClient, ModelLine, ModelParamsSchema, SamplerConstructorScheme, type ContentElem, type PullResult, type SamplerConstructor } from 'u-llm-server';
 import { createFreeEvent } from './event-util.js';
 import { Yurandom } from 'yurandom/index.js';
 import { Session } from './session.js';
@@ -44,9 +44,13 @@ export type AgentParams = {
     selectMemoriesSuffix: string,
     extractedMemoriesPrefix: string,
     extractedMemoriesSuffix: string,
+    extractionInstruction: string,
+    extractionInstructionFirst: string,
     autoRecallQueryLength: number,
     minimalRecallQueryLength: number,
     recallMinDistance: number,
+    recallMaxMemories: number,
+    taskSamplerMain: SamplerConstructor,
 }
 export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly activeFolder: string;
@@ -69,9 +73,13 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly selectMemoriesSuffix: string;
     public readonly extractedMemoriesPrefix: string;
     public readonly extractedMemoriesSuffix: string;
+    public readonly extractionInstruction: string;
+    public readonly extractionInstructionFirst: string;
     public readonly autoRecallQueryLength: number;
     public readonly minimalRecallQueryLength: number;
     public readonly recallMinDistance: number;
+    public readonly recallMaxMemories: number;
+    public readonly taskSamplerMain: SamplerConstructor;
     public constructor(params: AgentParams) {
         super();
         this.activeFolder = params.activeFolder;
@@ -101,6 +109,10 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         this.autoRecallQueryLength = params.autoRecallQueryLength;
         this.minimalRecallQueryLength = params.minimalRecallQueryLength;
         this.recallMinDistance = params.recallMinDistance;
+        this.recallMaxMemories = params.recallMaxMemories;
+        this.taskSamplerMain = params.taskSamplerMain;
+        this.extractionInstruction = params.extractionInstruction;
+        this.extractionInstructionFirst = params.extractionInstructionFirst;
     }
     public beforeRecall: Promise<void>[] = [];
     public async findMemos(query: RecallQuery, maxCount: number = 5, minDistance: number = 0): Promise<{ memo: Memo, distance: number }[]> {
@@ -121,7 +133,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             const vectorId = result.keys[i];
             const distance = result.distances[i];
             if (vectorId === undefined || distance === undefined) {
-                throw new Error(`unexpected situation: expected at least {amount} vectors to output from vector index`);
+                continue;
             }
             const name = this.memoryIds[String(vectorId)];
             if (name === undefined) {
@@ -163,18 +175,20 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             return { id, weight };
         });
         const ids = idsAndWeights.map(e => e.id);
-        const weights = idsAndWeights.map(e => e.weight);
-        const vectors = new Float32Array(keys.length * this.vectorIndex.dimensions());
-        const vectorsRaw = await this.embedder.embeddingBatched(keys.map(e => e.keyContent));
-        let offset = 0;
-        for (const vec of vectorsRaw) {
-            const multiplier = weights.pop();
-            if (multiplier === undefined) { throw new Error(`unexpected situation: mismatch in weights count and embeddings count`); }
-            const normalizedVec = this.vectorNormalizer.normalize(vec, multiplier);
-            vectors.set(normalizedVec, offset);
-            offset += vec.length;
+        if (keys.length !== 0) {
+            const weights = idsAndWeights.map(e => e.weight);
+            const vectors = new Float32Array(keys.length * this.vectorIndex.dimensions());
+            const vectorsRaw = await this.embedder.embeddingBatched(keys.map(e => e.keyContent));
+            let offset = 0;
+            for (const vec of vectorsRaw) {
+                const multiplier = weights.pop();
+                if (multiplier === undefined) { throw new Error(`unexpected situation: mismatch in weights count and embeddings count`); }
+                const normalizedVec = this.vectorNormalizer.normalize(vec, multiplier);
+                vectors.set(normalizedVec, offset);
+                offset += vec.length;
+            }
+            this.vectorIndex.add(ids, vectors);
         }
-        this.vectorIndex.add(ids, vectors);
         return memo;
     }
     public async removeMemo(name: `${string}.md`) {
@@ -222,91 +236,128 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         await Promise.all(lines.map(e => { this.modelClient.exec("line_free", { line_id: e.line_id }) }));
         console.log("CONNECTED");
         await this.runTask((await this.addMemo({
-            body: "",
-            briefly: "",
+            body: "Do something.",
+            briefly: "Short task.",
             type: "task",
             dependencies: [],
             failures: 0,
-        }, "main-task.task.md")).content as any);
+        }, "temp/short-task.task.md")).content as any);
+    }
+    public async findLineId() {
+        let lineId: string;
+        while (true) {
+            lineId = `task_${this.rng.hex(3)}`;
+            const lines = await this.modelClient.exec("line_list", null);
+            if (!lines.some(e => e.line_id === lineId)) {
+                return lineId;
+            }
+        }
     }
     public async runTask(task: MemoContent & { type: "task" }) {
-        const agent = this;
-        let stop = false;
-        let startEvent: PullResult | undefined = undefined;
-        await Session.run(this.modelClient, {
-            system_message: this.systemPrompt,
-            user_message: await this.formatTask(task),
-            stop_entropy: 7,
-            async onstart(event) {
-                const recallResult = await agent.tryRecall(this);
-                await this.line.cancel();
-                await this.push(
-                    recallResult.length === 0 ? "" : "\n" + recallResult,
-                    agent.modelClient.prefixes.userToAssistant,
-                );
-                stop = true;
-                startEvent = event;
-            },
-            async onevery(event) {
-                console.log({ text: this.text });
-                if (stop && event !== startEvent) {
-                    this.stop();
-                }
-            },
-            async oneog() {
-                throw new Error(`not implemented`);
-                this.stop();
+        const pre = this.modelClient.prefixes;
+        const taskText = await this.formatTask(task);
+        const line = await ClientLine.create(this.modelClient, await this.findLineId(), this.taskSamplerMain);
+        await line.clear();
+        const lineGoto = (pos: number) => line.trim(line.tokens.length - pos, true);
+        await line.push(
+            pre.initToSystem,
+            this.systemPrompt,
+            pre.systemToUser,
+            taskText,
+        )
+        await line.pull({ max_tokens: 0 });
+        console.log("TTFT");
+        const p1 = line.tokens.length;
+        const memories = (await this.findMemos({ query: taskText }, this.recallMaxMemories)).map(e => e.memo.content);
+        console.log("MEM GET");
+        const grammarIndices = (indices: number[]): string => {
+            if (indices.length === 0) {
+                throw new Error(`bad argument for grammarIndices: indices length must be >= 1`);
+            } else if (indices.length === 1) {
+                return `"${indices[0]}"`;
+            } else {
+                return `( "${indices[0]}" | "${indices[0]}" "," ${grammarIndices(indices.slice(1))} )`;
             }
-        });
-    }
-    public async askRelevant(session: Session, memories: MemoContent[]) {
-        const rng = new Yurandom("askRelevant");
-        for (let attempt = 0; attempt < 10; attempt++) {
-            const seed = rng.int(1, 32000);
-            const nTokens = session.line.tokens.length;
-            const promptSize = await session.line.push([
-                this.selectMemoriesPrefix.trim(),
-                ...memories.map((e, i) => `${i + 1}. ${e}`),
-                this.selectMemoriesSuffix.trim(),
-            ].join("\n").trim());
-            const pattern = memories.map((_, i, a) => `([${i + 1}]${i + 1 === a.length ? "" : "[,][ ]*"})?`);
-            await session.line.setSampler([
-                { type: "grammar", grammar: `root ::= "none" | ( ${pattern.join(" ")} )`, root: "root" },
-                { type: "dist", seed },
-            ], nTokens + promptSize);
-            const answer = await session.line.pull({ eog_stop: true, max_tokens: 50 });
-            await session.line.trim(nTokens - session.line.tokens.length);
-            const m = /^\s*(none|((\d+,\s*)*\d+))\s*$/.exec(answer.text ?? "");
-            if (m === null) { continue; }
-            session.updateText();
-            return m[1] === "none" ? [] : (m[1] ?? "").split(",").map(e => parseInt(e.trim()));
         }
-        throw new Error(`cannot parse model's output`);
+        let selectedMemories: MemoContent[];
+        if (memories.length === 0) {
+            selectedMemories = [];
+        } else {
+            const grammar = `root ::= "<SELECTED>" ( "none" | ${grammarIndices(memories.map((e, i) => i + 1))} ) "</SELECTED>"`;
+            console.log("GRAMMAR INIT");
+            await line.push(
+                await this.formatExtractionList(memories),
+                this.extractionInstructionFirst,
+                pre.userToAssistant
+            );
+            await line.setSampler([
+                {
+                    type: "grammar_lazy_patterns",
+                    grammar,
+                    root: "root",
+                    triggers: ["<SELECT>"],
+                },
+                { type: "dist", seed: this.rng.int(0, 32000) },
+            ]);
+            console.log(1);
+            await line.pull({ max_tokens: 0 });
+            console.log(2);
+            const p2 = line.tokens.length;
+            while (true) {
+                await line.push("<SELECT>");
+                console.log(0.1);
+                const res = await line.pull({
+                    eog_stop: true,
+                    max_tokens: this.recallMaxMemories * 5
+                });
+                console.log(0.2);
+                if (res.stopReasons.some(e => e === "max_tokens")) {
+                    await lineGoto(p2);
+                    continue;
+                } else {
+                    console.log({ text: res.text });
+                    let selectedIds: number[];
+                    if ((res.text ?? "").includes("none")) {
+                        selectedIds = [];
+                    } else {
+                        selectedIds = (res.text ?? "").split(",").map(e => parseInt(e.matchAll(/\d/g).toArray().join("")));
+                    }
+                    selectedMemories = memories.filter((e, i) => selectedIds.some(j => j === i + 1));
+                    await lineGoto(p1);
+                    break;
+                }
+            }
+        }
+        await line.push(
+            await this.formatRecallResult(selectedMemories),
+            pre.userToAssistant,
+        );
+        console.log("start");
+        console.log(await line.pull({ eog_stop: true, max_tokens: 10 }));
+        console.log("gen");
+
+        await line.free();
     }
-    public async tryRecall(session: Session, query?: string) {
-        if (query === undefined) {
-            query = "";
-            for (let i = -1; query.length <= this.autoRecallQueryLength; i--) {
-                query += session.line.tokens.at(i)?.piece ?? "";
-            }
-        };
-        if (query.length < this.minimalRecallQueryLength) { return ""; }
-        const recallResult = await this.findMemos({ query }, 5, this.recallMinDistance);
-        const indicesApproved = await this.askRelevant(session, recallResult.map(e => e.memo.content));
-        const memories = indicesApproved.map(i => recallResult[i]?.memo).filter(e => e !== undefined);
-        return memories.length === 0 ? "" : this.formatRecallResult(memories.map(e => e.content));
-    };
-    public formatRecallResult(memories: MemoContent[]) {
-        const chunks = memories.map(e => {
-            if (e.type === "fact") {
-                return `<memory_context>\n\t${e.body}\n</memory_context>`;
-            } else if (e.type === "rule") {
-                return `<skill_instruction>\n\t${e.body}\n</skill_instruction>`;
-            }
-            return "";
-        });
-        const body = chunks.filter(e => e.length !== 0).map(e => e.trim()).join("\n");
-        return `${this.extractedMemoriesPrefix.trim()}\n<extracted_memories>\n${body}\n</extracted_memories>\n${this.extractedMemoriesSuffix.trim()}`;
+    public async formatRecallResult(memories: MemoContent[]) {
+        const tags = { rule: "memorized_instruction", fact: "information", task: "suspended_task" };
+        if (memories.length === 0) { return ""; }
+        return [
+            `<relevant_memories>`,
+            ...memories.flatMap(e => [
+                `<${tags[e.type]}>`,
+                e.body,
+                `<${tags[e.type]}>`,
+            ]),
+            `</relevant_memories>`,
+        ].join("\n");
+    }
+    public async formatExtractionList(memories: MemoContent[]) {
+        const kinds = { rule: "INSTRUCTION", fact: "FACT", task: "SUSPENDED TASK" };
+        return [
+            `<related_memories>`,
+            ...memories.map((e, i) => `${i + 1}. (${kinds[e.type]}) ${e.briefly}`),
+            `</related_memories>`,
+        ].join("\n");
     }
     public async formatTask(task: MemoContent & { type: "task" }) {
         const dependencies = (await Promise.all(task.dependencies.map(name => this.memory.getMemo(name)))).filter(e => e !== undefined);
@@ -362,11 +413,21 @@ export const MainParamsScheme = z.object({
     autoRecallQueryLength: z.number(),
     minimalRecallQueryLength: z.number(),
     recallMinDistance: z.number(),
+    recallMaxMemories: z.int().positive(),
+    taskSamplerMain: SamplerConstructorScheme,
+    userMessageInstruction: z.string(),
+    selectMemoriesPrefix: z.string(),
+    selectMemoriesSuffix: z.string(),
+    extractedMemoriesPrefix: z.string(),
+    extractedMemoriesSuffix: z.string(),
+    extractionInstruction: z.string(),
+    extractionInstructionFirst: z.string(),
 });
 export type MainParams = z.output<typeof MainParamsScheme>;
 export async function main(params?: MainParams) {
     const activeFolder = path.join(path.dirname(import.meta.dirname), "workspace");
     await fs.ensureDir(activeFolder);
+    await fs.writeFile(path.join(activeFolder, "main-config.schema.json"), JSON.stringify(MainParamsScheme.toJSONSchema(), undefined, 4), { encoding: "utf-8" });
     if (params === undefined) {
         const name = (await fs.readdir(activeFolder)).map(e => /^main-config\.(json[5c]?|toml|ya?ml|ini)$/.exec(e)?.[0]).filter(e => typeof e === 'string')[0];
         if (name === undefined) {
@@ -457,14 +518,18 @@ export async function main(params?: MainParams) {
         rng: new Yurandom(params.randomSeed ?? `${process.pid}_${Date.now()}`),
         vectorNormalizer,
         systemPrompt: await fs.readFile(path.join(activeFolder, "system-prompt.md"), { encoding: "utf-8" }),
-        userMessageInstruction: await fs.readFile(path.join(activeFolder, "usermessage-instruction.md"), { encoding: "utf-8" }),
-        selectMemoriesPrefix: await fs.readFile(path.join(activeFolder, "select-memories-prefix.md"), { encoding: "utf-8" }),
-        selectMemoriesSuffix: await fs.readFile(path.join(activeFolder, "select-memories-suffix.md"), { encoding: "utf-8" }),
-        extractedMemoriesPrefix: await fs.readFile(path.join(activeFolder, "extracted-memories-prefix.md"), { encoding: "utf-8" }),
-        extractedMemoriesSuffix: await fs.readFile(path.join(activeFolder, "extracted-memories-suffix.md"), { encoding: "utf-8" }),
+        userMessageInstruction: params.userMessageInstruction,
+        selectMemoriesPrefix: params.selectMemoriesPrefix,
+        selectMemoriesSuffix: params.selectMemoriesSuffix,
+        extractedMemoriesPrefix: params.extractedMemoriesPrefix,
+        extractedMemoriesSuffix: params.extractedMemoriesSuffix,
+        extractionInstruction: params.extractionInstruction,
+        extractionInstructionFirst: params.extractionInstructionFirst,
         autoRecallQueryLength: params.autoRecallQueryLength,
         minimalRecallQueryLength: params.minimalRecallQueryLength,
         recallMinDistance: params.recallMinDistance,
+        recallMaxMemories: params.recallMaxMemories,
+        taskSamplerMain: params.taskSamplerMain,
     });
     app.on("close", () => process.exit(0));
     await app.run();

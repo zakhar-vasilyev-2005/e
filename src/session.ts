@@ -1,4 +1,4 @@
-import { ClientLine, ModelClient, packTokens, type PullResult, type StopCondition, type Token, type TokenSequence } from "u-llm-server";
+import { ClientLine, ModelClient, packTokens, type PullResult, type SamplerConstructor, type StopCondition, type Token, type TokenSequence } from "u-llm-server";
 import { Yurandom } from 'yurandom/index.js';
 
 
@@ -29,6 +29,7 @@ export interface SessionParams extends Partial<SessionDefaultHandlers> {
     state?: PullResult[],
     system_message?: string,
     user_message: string,
+    sampler?: SamplerConstructor,
     stop_entropy?: number,
     intervals?: SessionInterval[],
     patterns?: SessionPattern[],
@@ -51,6 +52,7 @@ export class Session {
         return new Session(line);
     }
     public constructor(public readonly line: ClientLine) { }
+    public sampler: SamplerConstructor = [{ type: "greedy" }];
     public stopEntropy: number = 6;
     public running: boolean = false;
     public started: boolean = false;
@@ -68,6 +70,8 @@ export class Session {
                 { role: "user", content: params.user_message + "\uE001" },
             ]
         });
+        this.sampler = params.sampler ?? [{ type: "greedy" }];
+        await this.line.setSampler(this.sampler);
         this.running = true;
         this.stopEntropy = params.stop_entropy ?? this.stopEntropy;
         this.intervals = (params.intervals ?? []).map(({ n_tokens, oninterval }) => ({ n_tokens, oninterval, last_checked: this.line.unparsedTokens.length }));;

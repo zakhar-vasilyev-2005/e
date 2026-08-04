@@ -97,6 +97,12 @@ export class Embedder {
         return (await this.embeddingBatched([text] as [string]))[0];
     }
     public async embeddingBatched<T extends string[]>(input: T): Promise<{ [i in keyof T]: number[] }> {
+        if (input.length === 0) {
+            throw new Error(`cannot get embedding with no string inputs`);
+        }
+        if (input.some(e => e.length === 0)) {
+            throw new Error(`cannot get embedding from an empty string`);
+        }
         const body = { input, model: "any" };
         const raw = await (await getResponse({ port: this.port, host: this.host }, "/embeddings", body, "POST")).json();
         const result = z.array(z.object({ index: z.number(), embedding: z.array(z.array(z.number())) })).parse(raw);
