@@ -1,0 +1,1 @@
+%(memo.index)s. (INSTRUCTION) %(memo.briefly)s

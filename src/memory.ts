@@ -139,14 +139,14 @@ export function parseMemo(s: string): MemoContent {
     })();
     return header.type === "task" ? {
         type: header.type,
-        briefly: header.description,
+        briefly: header.description.trim(),
         dependencies: header.dependencies as any[],
         failures: header.failures,
         body,
     } : {
         type: header.type,
         keys,
-        briefly: header.description,
+        briefly: header.description.trim(),
         body,
     };
 }

@@ -2,7 +2,6 @@ import EventEmitter from 'events';
 import { ClientLine, ModelClient, ModelLine, ModelParamsSchema, SamplerConstructorScheme, type ContentElem, type PullResult, type SamplerConstructor } from 'u-llm-server';
 import { createFreeEvent } from './event-util.js';
 import { Yurandom } from 'yurandom/index.js';
-import { Session } from './session.js';
 import { Embedder, getModels, type EmbedderCreateParams, type GetModelEntry } from './embedder.js';
 import { Index, MetricKind, ScalarKind, type IndexConfig } from 'usearch';
 import path from 'path';
@@ -12,6 +11,7 @@ import z from 'zod';
 import { getFileTree } from './get-file-tree.js';
 import { VectorNormalizerLib, type VectorNormalizer } from './vector-normalizer.js';
 import { readConfig } from './config.js';
+import { sprintf } from 'sprintf-js';
 
 
 
@@ -31,26 +31,29 @@ export type AgentParams = {
     embedder: Embedder,
     vectorIndexFile: string,
     vectorIndex: Index,
-    vectorIndexThreads: number,
-    memoryIndexSaveInterval: number,
     memory: MemoDB,
     memoryIdsFile: string,
     memoryIds: Record<string, string>,
     rng: Yurandom,
     vectorNormalizer: VectorNormalizer,
-    systemPrompt: string,
-    userMessageInstruction: string,
-    selectMemoriesPrefix: string,
-    selectMemoriesSuffix: string,
-    extractedMemoriesPrefix: string,
-    extractedMemoriesSuffix: string,
-    extractionInstruction: string,
-    extractionInstructionFirst: string,
-    autoRecallQueryLength: number,
-    minimalRecallQueryLength: number,
-    recallMinDistance: number,
-    recallMaxMemories: number,
     taskSamplerMain: SamplerConstructor,
+    tags: MainParams["tags"],
+    patterns: {
+        systemPrompt: string,
+        task: string,
+        taskDependencies: string,
+        taskDependenciesEntry: string,
+        recallSelector: string,
+        recallSelectorRuleEntry: string,
+        recallSelectorFactEntry: string,
+        recallSelectorTaskEntry: string,
+        recallResult: string,
+        recallResultFactEntry: string,
+        recallResultRuleEntry: string,
+        recallResultTaskEntry: string,
+        taskGrammarMain: string,
+    },
+    numbers: MainParams["numbers"],
 }
 export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly activeFolder: string;
@@ -58,8 +61,6 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly embedder: Embedder;
     public readonly vectorIndexFile: string;
     public readonly vectorIndex: Index;
-    public readonly vectorIndexThreads: number;
-    public readonly memoryIndexSaveInterval: number;
     public memoryIndexSaveLoopRunning: boolean = false;
     public readonly memory: MemoDB;
     public readonly memoryIdsFile: string;
@@ -67,19 +68,11 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly memoryIdsForName: Record<string, string[]>;
     public readonly rng: Yurandom;
     public readonly vectorNormalizer: VectorNormalizer;
-    public readonly systemPrompt: string;
-    public readonly userMessageInstruction: string;
-    public readonly selectMemoriesPrefix: string;
-    public readonly selectMemoriesSuffix: string;
-    public readonly extractedMemoriesPrefix: string;
-    public readonly extractedMemoriesSuffix: string;
-    public readonly extractionInstruction: string;
-    public readonly extractionInstructionFirst: string;
-    public readonly autoRecallQueryLength: number;
-    public readonly minimalRecallQueryLength: number;
-    public readonly recallMinDistance: number;
-    public readonly recallMaxMemories: number;
     public readonly taskSamplerMain: SamplerConstructor;
+    public readonly taskGrammarMain: string;
+    public readonly tags: MainParams["tags"];
+    public readonly patterns: AgentParams["patterns"];
+    public readonly numbers: MainParams["numbers"];
     public constructor(params: AgentParams) {
         super();
         this.activeFolder = params.activeFolder;
@@ -87,11 +80,8 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         this.embedder = params.embedder;
         this.vectorIndexFile = params.vectorIndexFile;
         this.vectorIndex = params.vectorIndex;
-        this.vectorIndexThreads = params.vectorIndexThreads;
-        this.memoryIndexSaveInterval = params.memoryIndexSaveInterval;
         this.memory = params.memory;
         this.memoryIdsFile = params.memoryIdsFile;
-        this.memoryIndexSaveInterval = params.memoryIndexSaveInterval;
         this.memoryIds = params.memoryIds;
         this.memoryIdsForName = {};
         for (const id in this.memoryIds) {
@@ -100,19 +90,20 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         }
         this.rng = params.rng;
         this.vectorNormalizer = params.vectorNormalizer;
-        this.systemPrompt = params.systemPrompt;
-        this.userMessageInstruction = params.userMessageInstruction;
-        this.selectMemoriesPrefix = params.selectMemoriesPrefix;
-        this.selectMemoriesSuffix = params.selectMemoriesSuffix;
-        this.extractedMemoriesPrefix = params.extractedMemoriesPrefix;
-        this.extractedMemoriesSuffix = params.extractedMemoriesSuffix;
-        this.autoRecallQueryLength = params.autoRecallQueryLength;
-        this.minimalRecallQueryLength = params.minimalRecallQueryLength;
-        this.recallMinDistance = params.recallMinDistance;
-        this.recallMaxMemories = params.recallMaxMemories;
         this.taskSamplerMain = params.taskSamplerMain;
-        this.extractionInstruction = params.extractionInstruction;
-        this.extractionInstructionFirst = params.extractionInstructionFirst;
+        this.taskGrammarMain = sprintf(params.patterns.taskGrammarMain, {
+            tags: params.tags,
+            patterns: {
+                think_content: "( " + [...("</" + params.tags.think + ">")].map((c, i, a) => a.slice(0, i + 1).join("")).map(tag => {
+                    const last = [...tag][tag.length - 1];
+                    const charClass = `[^${"]\\".includes(last ?? "-") ? "\\" : ""}${last ?? ""}]`;
+                    return tag.length === 1 ? charClass : [`"${tag.slice(0, -1).replaceAll("\\", "\\\\").replaceAll("\"", "\\")}" ${charClass}`];
+                }).join(" | ") + ")+"
+            }
+        });
+        this.tags = params.tags;
+        this.patterns = params.patterns;
+        this.numbers = params.numbers;
     }
     public beforeRecall: Promise<void>[] = [];
     public async findMemos(query: RecallQuery, maxCount: number = 5, minDistance: number = 0): Promise<{ memo: Memo, distance: number }[]> {
@@ -126,7 +117,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         }
         const rawQueryVector = Float32Array.from(await this.embedder.embedding(query.query));
         const queryVector = this.vectorNormalizer.normalize(rawQueryVector, 1);
-        const result = this.vectorIndex.search(queryVector, maxCount, this.vectorIndexThreads);
+        const result = this.vectorIndex.search(queryVector, maxCount, this.numbers.vectorIndexThreads);
         const toDelete: bigint[] = [];
         const memories: { memo: Memo, distance: number }[] = [];
         for (let i = 0; i < maxCount; i++) {
@@ -217,7 +208,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         const memoryIndexSaveLoop = async () => {
             await this.updateMemoryIndex();
             if (this.memoryIndexSaveLoopRunning) {
-                setTimeout(memoryIndexSaveLoop, this.memoryIndexSaveInterval);
+                setTimeout(memoryIndexSaveLoop, this.numbers.memoryIndexSaveInterval);
             }
         };
         this.memoryIndexSaveLoopRunning = true;
@@ -241,7 +232,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             type: "task",
             dependencies: [],
             failures: 0,
-        }, "temp/short-task.task.md")).content as any);
+        }, "temp/short-task.md")).content as any);
     }
     public async findLineId() {
         let lineId: string;
@@ -257,118 +248,144 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         const pre = this.modelClient.prefixes;
         const taskText = await this.formatTask(task);
         const line = await ClientLine.create(this.modelClient, await this.findLineId(), this.taskSamplerMain);
+        this.modelClient.on("tokens", e => {
+            if (e.line_id === line.lineId) {
+                process.stdout.write(e.input.map(e => e.piece).join(""));
+            }
+        });
         await line.clear();
-        const lineGoto = (pos: number) => line.trim(line.tokens.length - pos, true);
-        await line.push(
-            pre.initToSystem,
-            this.systemPrompt,
-            pre.systemToUser,
-            taskText,
-        )
-        await line.pull({ max_tokens: 0 });
-        console.log("TTFT");
-        const p1 = line.tokens.length;
-        const memories = (await this.findMemos({ query: taskText }, this.recallMaxMemories)).map(e => e.memo.content);
-        console.log("MEM GET");
+        const systemPrompt = sprintf(this.patterns.systemPrompt, {
+            tags: this.tags,
+            date: new Date(),
+        });
+        const p1 = await line.step(pre.initToSystem, systemPrompt, pre.systemToUser, taskText);
+        const memories = (await this.findMemos({ query: taskText }, this.numbers.recallMaxMemories)).map(e => e.memo.content);
         const grammarIndices = (indices: number[]): string => {
             if (indices.length === 0) {
                 throw new Error(`bad argument for grammarIndices: indices length must be >= 1`);
             } else if (indices.length === 1) {
                 return `"${indices[0]}"`;
             } else {
-                return `( "${indices[0]}" | "${indices[0]}" "," ${grammarIndices(indices.slice(1))} )`;
+                return `( "${indices[0]}" | "${indices[0]}" "," [ ]* ${grammarIndices(indices.slice(1))} )`;
             }
         }
         let selectedMemories: MemoContent[];
         if (memories.length === 0) {
             selectedMemories = [];
         } else {
-            const grammar = `root ::= "<SELECTED>" ( "none" | ${grammarIndices(memories.map((e, i) => i + 1))} ) "</SELECTED>"`;
-            console.log("GRAMMAR INIT");
-            await line.push(
-                await this.formatExtractionList(memories),
-                this.extractionInstructionFirst,
+            const grammar = `root ::= "<${this.tags.select_memories}>" [ ]* ( "none" | ${grammarIndices(memories.map((e, i) => i + 1))} ) [ ]* "</${this.tags.select_memories}>"`;
+            const p2 = await line.step(
+                await this.formatRecallSelector(memories),
                 pre.userToAssistant
             );
             await line.setSampler([
-                {
-                    type: "grammar_lazy_patterns",
-                    grammar,
-                    root: "root",
-                    triggers: ["<SELECT>"],
-                },
+                { type: "grammar", grammar, root: "root" },
                 { type: "dist", seed: this.rng.int(0, 32000) },
-            ]);
-            console.log(1);
-            await line.pull({ max_tokens: 0 });
-            console.log(2);
-            const p2 = line.tokens.length;
+            ], line.tokens.length);
             while (true) {
-                await line.push("<SELECT>");
-                console.log(0.1);
+                await line.push(`<${this.tags.select_memories}>`);
                 const res = await line.pull({
                     eog_stop: true,
-                    max_tokens: this.recallMaxMemories * 5
+                    max_tokens: this.numbers.recallSelectorMaxTokens,
                 });
-                console.log(0.2);
                 if (res.stopReasons.some(e => e === "max_tokens")) {
-                    await lineGoto(p2);
+                    await line.goto(p2);
                     continue;
                 } else {
-                    console.log({ text: res.text });
                     let selectedIds: number[];
-                    if ((res.text ?? "").includes("none")) {
+                    const m = new RegExp(`^<${this.tags.select_memories}>\\s*(none|(\\d+,\\s*)*\\d+)\\s*</${this.tags.select_memories}>$`, "u").exec(res.text ?? "");
+                    const answer = m?.[0];
+                    if (typeof answer !== "string") {
+                        throw new Error(`recall selector broken: cannot extract answer`);
+                    }
+                    if (answer.trim() === "none") {
                         selectedIds = [];
                     } else {
-                        selectedIds = (res.text ?? "").split(",").map(e => parseInt(e.matchAll(/\d/g).toArray().join("")));
+                        selectedIds = answer.split(",").map(e => parseInt(e.matchAll(/\d/g).toArray().join("")));
                     }
-                    selectedMemories = memories.filter((e, i) => selectedIds.some(j => j === i + 1));
-                    await lineGoto(p1);
+                    selectedMemories = memories.filter((e, i) => selectedIds.some(j => j + 1 === i));
                     break;
                 }
             }
         }
-        await line.push(
-            await this.formatRecallResult(selectedMemories),
+        await line.goto(p1);
+        const p3 = await line.step(
+            this.formatRecallResult(selectedMemories),
             pre.userToAssistant,
-        );
-        console.log("start");
-        console.log(await line.pull({ eog_stop: true, max_tokens: 10 }));
-        console.log("gen");
+        )
+        console.log({ grammar: this.taskGrammarMain });
+        await line.setSampler([
+            { type: "grammar", grammar: this.taskGrammarMain, root: "root" },
+            { type: "dist", seed: this.rng.int(0, 32000) },
+        ], p3);
+        console.log(await line.pull({ eog_stop: true, max_tokens: 1000 }));
 
         await line.free();
     }
-    public async formatRecallResult(memories: MemoContent[]) {
-        const tags = { rule: "memorized_instruction", fact: "information", task: "suspended_task" };
-        if (memories.length === 0) { return ""; }
-        return [
-            `<relevant_memories>`,
-            ...memories.flatMap(e => [
-                `<${tags[e.type]}>`,
-                e.body,
-                `<${tags[e.type]}>`,
-            ]),
-            `</relevant_memories>`,
-        ].join("\n");
+    public formatMemoriesList(memories: MemoContent[], patterns: { main: string, fact: string, rule: string, task: string }) {
+        return sprintf(patterns.main, {
+            tags: this.tags,
+            memories: {
+                entries: memories.map((e, i) => sprintf(patterns[e.type], {
+                    tags: this.tags,
+                    memo: {
+                        index: i + 1,
+                        briefly: e.briefly,
+                        body: e.body,
+                        type: e.type,
+                        failures: e.failures ?? "N/A",
+                    },
+                    memories: {
+                        count: memories.length,
+                    }
+                })).join(""),
+                count: memories.length,
+            }
+        });
     }
-    public async formatExtractionList(memories: MemoContent[]) {
-        const kinds = { rule: "INSTRUCTION", fact: "FACT", task: "SUSPENDED TASK" };
-        return [
-            `<related_memories>`,
-            ...memories.map((e, i) => `${i + 1}. (${kinds[e.type]}) ${e.briefly}`),
-            `</related_memories>`,
-        ].join("\n");
+    public formatRecallResult(memories: MemoContent[]) {
+        return memories.length === 0 ? "" : this.formatMemoriesList(memories, {
+            main: this.patterns.recallResult,
+            fact: this.patterns.recallResultFactEntry,
+            rule: this.patterns.recallResultRuleEntry,
+            task: this.patterns.recallResultTaskEntry
+        });
+    }
+    public formatRecallSelector(memories: MemoContent[]) {
+        return this.formatMemoriesList(memories, {
+            main: this.patterns.recallSelector,
+            fact: this.patterns.recallSelectorFactEntry,
+            rule: this.patterns.recallSelectorRuleEntry,
+            task: this.patterns.recallSelectorTaskEntry
+        });
     }
     public async formatTask(task: MemoContent & { type: "task" }) {
-        const dependencies = (await Promise.all(task.dependencies.map(name => this.memory.getMemo(name)))).filter(e => e !== undefined);
-        return [
-            "<active_task>",
-            `<name> ${task.briefly.trim()} </name>`,
-            "<goal>", task.body.trim(), "</goal>",
-            ...(dependencies.length === 0 ? [] : ["<dependencies>", ...dependencies.map((e, i) => `${i + 1}. ${e.content.briefly}`), "</dependencies>"]),
-            "<instruction>", this.userMessageInstruction.trim(), "</instruction>",
-            "</active_task>"
-        ].join("\n").trim();
+        const dependencies = (await Promise.all(task.dependencies.map(name => this.memory.getMemo(name)))).filter(e => e?.content?.type === "task") as Memo[];
+        return sprintf(this.patterns.task, {
+            tags: this.tags,
+            task: {
+                dependencies: dependencies.length === 0 ? "" : sprintf(this.patterns.taskDependencies, {
+                    tags: this.tags,
+                    dependencies: {
+                        entries: dependencies.map((e, i) => sprintf(this.patterns.taskDependenciesEntry, {
+                            tags: this.tags,
+                            dependency: {
+                                index: i + 1,
+                                briefly: e.content.briefly,
+                                body: e.content.body,
+                            },
+                            dependencies: {
+                                count: dependencies.length,
+                            }
+                        })).join(""),
+                        count: dependencies.length,
+                    }
+                }),
+                dependency_count: dependencies.length,
+                briefly: task.briefly,
+                body: task.body,
+            }
+        })
     }
     public readonly close = createFreeEvent("close", async () => {
         await this.modelClient.close();
@@ -376,6 +393,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
 }
 
 
+export const TagNameScheme = z.string().regex(/^[a-zA-Z_0-9]+$/);
 export const MainParamsScheme = z.object({
     embeddingModel: z.string().optional(),
     embedderParams: z.object({
@@ -407,21 +425,22 @@ export const MainParamsScheme = z.object({
         expansion_search: z.number(),
         multi: z.boolean(),
     }),
-    vectorIndexThreads: z.number(),
-    memoryIndexSaveInterval: z.number(),
     randomSeed: z.union([z.string(), z.null()]),
-    autoRecallQueryLength: z.number(),
-    minimalRecallQueryLength: z.number(),
-    recallMinDistance: z.number(),
-    recallMaxMemories: z.int().positive(),
     taskSamplerMain: SamplerConstructorScheme,
-    userMessageInstruction: z.string(),
-    selectMemoriesPrefix: z.string(),
-    selectMemoriesSuffix: z.string(),
-    extractedMemoriesPrefix: z.string(),
-    extractedMemoriesSuffix: z.string(),
-    extractionInstruction: z.string(),
-    extractionInstructionFirst: z.string(),
+    tags: z.object({
+        think: TagNameScheme,
+        select_memories: TagNameScheme,
+        step_status: TagNameScheme,
+    }),
+    numbers: z.object({
+        vectorIndexThreads: z.int().positive(),
+        memoryIndexSaveInterval: z.int().positive(),
+        autoRecallQueryLength: z.number(),
+        minimalRecallQueryLength: z.number(),
+        recallMinDistance: z.number(),
+        recallMaxMemories: z.int().positive(),
+        recallSelectorMaxTokens: z.int().positive(),
+    }),
 });
 export type MainParams = z.output<typeof MainParamsScheme>;
 export async function main(params?: MainParams) {
@@ -504,32 +523,36 @@ export async function main(params?: MainParams) {
         await fs.writeJSON(memoryIdsFile, {}, { encoding: "utf-8" });
     }
     const vectorNormalizer = new VectorNormalizerLib(path.join(path.dirname(import.meta.dirname), "binaries", "utils", "libvector-normalizer.so"));
+    const rp = (name: string) => fs.readFile(path.join(activeFolder, "patterns", name), { encoding: "utf-8" });
     const app = new Agent({
         activeFolder,
         modelClient,
         embedder,
         vectorIndexFile,
         vectorIndex,
-        vectorIndexThreads: params.vectorIndexThreads,
-        memoryIndexSaveInterval: params.memoryIndexSaveInterval,
         memory,
         memoryIdsFile,
         memoryIds,
         rng: new Yurandom(params.randomSeed ?? `${process.pid}_${Date.now()}`),
         vectorNormalizer,
-        systemPrompt: await fs.readFile(path.join(activeFolder, "system-prompt.md"), { encoding: "utf-8" }),
-        userMessageInstruction: params.userMessageInstruction,
-        selectMemoriesPrefix: params.selectMemoriesPrefix,
-        selectMemoriesSuffix: params.selectMemoriesSuffix,
-        extractedMemoriesPrefix: params.extractedMemoriesPrefix,
-        extractedMemoriesSuffix: params.extractedMemoriesSuffix,
-        extractionInstruction: params.extractionInstruction,
-        extractionInstructionFirst: params.extractionInstructionFirst,
-        autoRecallQueryLength: params.autoRecallQueryLength,
-        minimalRecallQueryLength: params.minimalRecallQueryLength,
-        recallMinDistance: params.recallMinDistance,
-        recallMaxMemories: params.recallMaxMemories,
         taskSamplerMain: params.taskSamplerMain,
+        tags: params.tags,
+        patterns: {
+            systemPrompt: await rp("system-prompt.md"),
+            task: await rp("task.md"),
+            taskDependencies: await rp("task-dependencies.md"),
+            taskDependenciesEntry: await rp("task-dependencies-entry.md"),
+            recallSelector: await rp("recall-selector.md"),
+            recallSelectorFactEntry: await rp("recall-selector-fact.md"),
+            recallSelectorRuleEntry: await rp("recall-selector-rule.md"),
+            recallSelectorTaskEntry: await rp("recall-selector-task.md"),
+            recallResult: await rp("recall-result.md"),
+            recallResultFactEntry: await rp("recall-result-fact.md"),
+            recallResultRuleEntry: await rp("recall-result-rule.md"),
+            recallResultTaskEntry: await rp("recall-result-task.md"),
+            taskGrammarMain: await rp("task-grammar-main.gbnf"),
+        },
+        numbers: params.numbers,
     });
     app.on("close", () => process.exit(0));
     await app.run();

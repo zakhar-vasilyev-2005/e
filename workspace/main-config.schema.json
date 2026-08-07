@@ -208,12 +208,6 @@
             ],
             "additionalProperties": false
         },
-        "vectorIndexThreads": {
-            "type": "number"
-        },
-        "memoryIndexSaveInterval": {
-            "type": "number"
-        },
         "randomSeed": {
             "anyOf": [
                 {
@@ -223,20 +217,6 @@
                     "type": "null"
                 }
             ]
-        },
-        "autoRecallQueryLength": {
-            "type": "number"
-        },
-        "minimalRecallQueryLength": {
-            "type": "number"
-        },
-        "recallMinDistance": {
-            "type": "number"
-        },
-        "recallMaxMemories": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
         },
         "taskSamplerMain": {
             "minItems": 1,
@@ -717,47 +697,82 @@
                 ]
             }
         },
-        "userMessageInstruction": {
-            "type": "string"
+        "tags": {
+            "type": "object",
+            "properties": {
+                "think": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z_0-9]+$"
+                },
+                "select_memories": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z_0-9]+$"
+                },
+                "step_status": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z_0-9]+$"
+                }
+            },
+            "required": [
+                "think",
+                "select_memories",
+                "step_status"
+            ],
+            "additionalProperties": false
         },
-        "selectMemoriesPrefix": {
-            "type": "string"
-        },
-        "selectMemoriesSuffix": {
-            "type": "string"
-        },
-        "extractedMemoriesPrefix": {
-            "type": "string"
-        },
-        "extractedMemoriesSuffix": {
-            "type": "string"
-        },
-        "extractionInstruction": {
-            "type": "string"
-        },
-        "extractionInstructionFirst": {
-            "type": "string"
+        "numbers": {
+            "type": "object",
+            "properties": {
+                "vectorIndexThreads": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                },
+                "memoryIndexSaveInterval": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                },
+                "autoRecallQueryLength": {
+                    "type": "number"
+                },
+                "minimalRecallQueryLength": {
+                    "type": "number"
+                },
+                "recallMinDistance": {
+                    "type": "number"
+                },
+                "recallMaxMemories": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                },
+                "recallSelectorMaxTokens": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                }
+            },
+            "required": [
+                "vectorIndexThreads",
+                "memoryIndexSaveInterval",
+                "autoRecallQueryLength",
+                "minimalRecallQueryLength",
+                "recallMinDistance",
+                "recallMaxMemories",
+                "recallSelectorMaxTokens"
+            ],
+            "additionalProperties": false
         }
     },
     "required": [
         "embedderParams",
         "modelParams",
         "vectorIndexParams",
-        "vectorIndexThreads",
-        "memoryIndexSaveInterval",
         "randomSeed",
-        "autoRecallQueryLength",
-        "minimalRecallQueryLength",
-        "recallMinDistance",
-        "recallMaxMemories",
         "taskSamplerMain",
-        "userMessageInstruction",
-        "selectMemoriesPrefix",
-        "selectMemoriesSuffix",
-        "extractedMemoriesPrefix",
-        "extractedMemoriesSuffix",
-        "extractionInstruction",
-        "extractionInstructionFirst"
+        "tags",
+        "numbers"
     ],
     "additionalProperties": false
 }

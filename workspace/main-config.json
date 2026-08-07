@@ -25,7 +25,6 @@
         "n_gpu_layers": 999,
         "main_gpu": 1,
         "check_tensors": false,
-        "split_mode": "none",
         "use_extra_bufts": true
       },
       "timeout": 100000,
@@ -41,22 +40,23 @@
     "multi": false
   },
   "randomSeed": null,
-  "vectorIndexThreads": 6,
-  "memoryIndexSaveInterval": 10000,
-  "autoRecallQueryLength": 800,
-  "minimalRecallQueryLength": 100,
-  "recallMinDistance": 0.95,
-  "recallMaxMemories": 10,
   "taskSamplerMain": [
     {
       "type": "greedy"
     }
   ],
-  "userMessageInstruction": "", // TODO!
-  "selectMemoriesPrefix": "", // TODO!
-  "selectMemoriesSuffix": "", // TODO!
-  "extractedMemoriesPrefix": "", // TODO!
-  "extractedMemoriesSuffix": "", // TODO!
-  "extractionInstruction": "Please, select relevant facts/instructions to get full information.\nSelect in form of either 'none' or list of selected indices (numbers).\nPut the answer between <SELECT> and </SELECT> tags.",
-  "extractionInstructionFirst": "Please, select facts/instructions that are relevant to current task.\nSelect in form of either 'none' or list of selected indices (numbers).\nPut the answer between <SELECT> and </SELECT> tags.",
+  "tags": {
+    "think": "think",
+    "select_memories": "select",
+    "step_status": "status"
+  },
+  "numbers": {
+    "vectorIndexThreads": 6,
+    "memoryIndexSaveInterval": 10000,
+    "autoRecallQueryLength": 800,
+    "minimalRecallQueryLength": 100,
+    "recallMinDistance": 0.95,
+    "recallMaxMemories": 10,
+    "recallSelectorMaxTokens": 60
+  }
 }
