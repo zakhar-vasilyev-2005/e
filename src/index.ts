@@ -1,5 +1,5 @@
 import EventEmitter from 'events';
-import { ClientLine, ModelClient, ModelLine, ModelParamsSchema, SamplerConstructorScheme, type ContentElem, type PullResult, type SamplerConstructor } from 'u-llm-server';
+import { ClientLine, ModelClient, ModelLine, ModelParamsSchema, SamplerConstructorScheme, type ContentElem, type PullResult, type SamplerConstructor, type SamplerParam } from 'u-llm-server';
 import { createFreeEvent } from './event-util.js';
 import { Yurandom } from 'yurandom/index.js';
 import { Embedder, getModels, type EmbedderCreateParams, type GetModelEntry } from './embedder.js';
@@ -36,24 +36,26 @@ export type AgentParams = {
     memoryIds: Record<string, string>,
     rng: Yurandom,
     vectorNormalizer: VectorNormalizer,
-    taskSamplerMain: SamplerConstructor,
-    tags: MainParams["tags"],
-    patterns: {
-        systemPrompt: string,
-        task: string,
-        taskDependencies: string,
-        taskDependenciesEntry: string,
-        recallSelector: string,
-        recallSelectorRuleEntry: string,
-        recallSelectorFactEntry: string,
-        recallSelectorTaskEntry: string,
-        recallResult: string,
-        recallResultFactEntry: string,
-        recallResultRuleEntry: string,
-        recallResultTaskEntry: string,
-        taskGrammarMain: string,
-    },
+    strings: MainParams["strings"] & {
+        patterns: {
+            systemPrompt: string,
+            task: string,
+            taskDependencies: string,
+            taskDependenciesEntry: string,
+            recallSelector: string,
+            recallSelectorRuleEntry: string,
+            recallSelectorFactEntry: string,
+            recallSelectorTaskEntry: string,
+            recallResult: string,
+            recallResultFactEntry: string,
+            recallResultRuleEntry: string,
+            recallResultTaskEntry: string,
+        },
+        grammar: Record<string, string>,
+        xmlEscapes: Record<string, string>,
+    };
     numbers: MainParams["numbers"],
+    samplers: MainParams["samplers"],
 }
 export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly activeFolder: string;
@@ -68,11 +70,22 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly memoryIdsForName: Record<string, string[]>;
     public readonly rng: Yurandom;
     public readonly vectorNormalizer: VectorNormalizer;
-    public readonly taskSamplerMain: SamplerConstructor;
-    public readonly taskGrammarMain: string;
-    public readonly tags: MainParams["tags"];
-    public readonly patterns: AgentParams["patterns"];
+    public readonly strings: AgentParams["strings"];
     public readonly numbers: MainParams["numbers"];
+    public readonly samplers: AgentParams["samplers"] & {
+        tool_call_header: SamplerParam,
+    };
+    public readonly tools: {
+        name: keyof MainParams["strings"]["tool_names"],
+        aliases: string[],
+        grammar: string,
+        grammarId: string,
+        requiredArgs: string[],
+        optionalArgs: string[],
+    }[];
+    public readonly regexes: {
+        toolCall: RegExp,
+    };
     public constructor(params: AgentParams) {
         super();
         this.activeFolder = params.activeFolder;
@@ -90,20 +103,73 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         }
         this.rng = params.rng;
         this.vectorNormalizer = params.vectorNormalizer;
-        this.taskSamplerMain = params.taskSamplerMain;
-        this.taskGrammarMain = sprintf(params.patterns.taskGrammarMain, {
-            tags: params.tags,
-            patterns: {
-                think_content: "( " + [...("</" + params.tags.think + ">")].map((c, i, a) => a.slice(0, i + 1).join("")).map(tag => {
-                    const last = [...tag][tag.length - 1];
-                    const charClass = `[^${"]\\".includes(last ?? "-") ? "\\" : ""}${last ?? ""}]`;
-                    return tag.length === 1 ? charClass : [`"${tag.slice(0, -1).replaceAll("\\", "\\\\").replaceAll("\"", "\\")}" ${charClass}`];
-                }).join(" | ") + ")+"
-            }
-        });
-        this.tags = params.tags;
-        this.patterns = params.patterns;
+        this.strings = params.strings;
         this.numbers = params.numbers;
+        const tags = this.strings.tags;
+        this.tools = (() => {
+            type Args = { required: string[], optional: string[] };
+            const tool_args: { [k in keyof (typeof this.strings.tool_names)]: Args } = {
+                bash: {
+                    required: [],
+                    optional: ["timeout", "lines"],
+                },
+                python: {
+                    required: [],
+                    optional: ["timeout", "lines"],
+                },
+                readfile: {
+                    required: ["path"],
+                    optional: ["lines"],
+                },
+                writefile: {
+                    required: ["path"],
+                    optional: ["syntax"],
+                },
+            };
+            return Object.entries(this.strings.tool_names).map(([k, v]) => {
+                const args: Args = (tool_args as Record<string, Args>)[k] ?? { required: [], optional: [] };
+                return {
+                    name: k,
+                    aliases: v,
+                    grammar: `( ` + v.map(e => `"${e}"`).join(" | ") + [
+                        ` ) "\""`,
+                        ...args.required.map(e => "arg-" + e),
+                        ...args.optional.map(e => "arg-" + e + "?"),
+                    ].join(" "),
+                    grammarId: "tool-" + k.replaceAll("_", "-"),
+                    requiredArgs: args.required,
+                    optionalArgs: args.optional,
+                } as Agent["tools"] extends (infer T)[] ? T : never;
+            }).filter(e => e.aliases.length !== 0);
+        })();
+        this.regexes = {
+            toolCall: new RegExp((
+                `<${tags.tool_call} name =\"(` +
+                this.tools.flatMap(
+                    tool => tool.aliases.map(e => e.replaceAll(/[\\^$.*+?()[\]{}|]/g, m => "\\" + m))
+                ).join("|") +
+                `)\"([^>]+)>`
+            ), "gu"),
+        }
+        this.samplers = Object.assign(Object.assign({}, params.samplers), {
+            tool_call_header: {
+                type: "grammar_lazy_patterns",
+                grammar: [
+                    `int ::= "0" | [1-9][0-9]*`,
+                    `nl ::= [\\n]`,
+                    `ws ::= [ \t]+`,
+                    `spc ::= [ \t\\n]+`,
+                    `root ::= "<${tags.tool_call} name=\"" ( ${this.tools.map(e => e.grammarId).join(" | ")} ) ">"`,
+                    ...this.tools.map(e => `${e.grammarId} ::= ${e.grammar}`),
+                    `arg-syntax ::= " syntax=\"" ( ${Object.keys(this.strings.grammar)} ) `,
+                    `arg-lines ::= " lines=\"" int ( ".." int | "..." ) "\""`,
+                    `arg-path ::= " path=\"" [^">\\n\t]+ "\""`,
+                    `arg-timeout ::= " timeout=\"" int "\""`,
+                ].join("\n"),
+                root: "root",
+                triggers: [`<${tags.tool_call} name=\"`],
+            } as SamplerParam,
+        });
     }
     public beforeRecall: Promise<void>[] = [];
     public async findMemos(query: RecallQuery, maxCount: number = 5, minDistance: number = 0): Promise<{ memo: Memo, distance: number }[]> {
@@ -246,16 +312,17 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     }
     public async runTask(task: MemoContent & { type: "task" }) {
         const pre = this.modelClient.prefixes;
+        const tags = this.strings.tags;
         const taskText = await this.formatTask(task);
-        const line = await ClientLine.create(this.modelClient, await this.findLineId(), this.taskSamplerMain);
+        const line = await ClientLine.create(this.modelClient, await this.findLineId());
         this.modelClient.on("tokens", e => {
             if (e.line_id === line.lineId) {
                 process.stdout.write(e.input.map(e => e.piece).join(""));
             }
         });
         await line.clear();
-        const systemPrompt = sprintf(this.patterns.systemPrompt, {
-            tags: this.tags,
+        const systemPrompt = sprintf(this.strings.patterns.systemPrompt, {
+            tags: this.strings.tags,
             date: new Date(),
         });
         const p1 = await line.step(pre.initToSystem, systemPrompt, pre.systemToUser, taskText);
@@ -273,7 +340,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         if (memories.length === 0) {
             selectedMemories = [];
         } else {
-            const grammar = `root ::= "<${this.tags.select_memories}>" [ ]* ( "none" | ${grammarIndices(memories.map((e, i) => i + 1))} ) [ ]* "</${this.tags.select_memories}>"`;
+            const grammar = `root ::= "<${tags.select_memories}>" [ ]* ( "none" | ${grammarIndices(memories.map((e, i) => i + 1))} ) [ ]* "</${tags.select_memories}>"`;
             const p2 = await line.step(
                 await this.formatRecallSelector(memories),
                 pre.userToAssistant
@@ -283,7 +350,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
                 { type: "dist", seed: this.rng.int(0, 32000) },
             ], line.tokens.length);
             while (true) {
-                await line.push(`<${this.tags.select_memories}>`);
+                await line.push(`<${tags.select_memories}>`);
                 const res = await line.pull({
                     eog_stop: true,
                     max_tokens: this.numbers.recallSelectorMaxTokens,
@@ -293,7 +360,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
                     continue;
                 } else {
                     let selectedIds: number[];
-                    const m = new RegExp(`^<${this.tags.select_memories}>\\s*(none|(\\d+,\\s*)*\\d+)\\s*</${this.tags.select_memories}>$`, "u").exec(res.text ?? "");
+                    const m = new RegExp(`^<${tags.select_memories}>\\s*(none|(\\d+,\\s*)*\\d+)\\s*</${tags.select_memories}>$`, "u").exec(res.text ?? "");
                     const answer = m?.[0];
                     if (typeof answer !== "string") {
                         throw new Error(`recall selector broken: cannot extract answer`);
@@ -313,21 +380,67 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             this.formatRecallResult(selectedMemories),
             pre.userToAssistant,
         )
-        console.log({ grammar: this.taskGrammarMain });
         await line.setSampler([
-            { type: "grammar", grammar: this.taskGrammarMain, root: "root" },
-            { type: "dist", seed: this.rng.int(0, 32000) },
+            this.samplers.tool_call_header,
+            ...this.samplers.taskReasoning,
         ], p3);
-        console.log(await line.pull({ eog_stop: true, max_tokens: 1000 }));
+        const taskStep = await line.pull({ eog_stop: true, max_tokens: 1000 });
+        const p4 = line.tokens.length;
+        this.regexes.toolCall.lastIndex = 0;
+        const toolCall = (taskStep.text ?? "").matchAll(this.regexes.toolCall).toArray().at(-1);
+        if (toolCall === undefined) {
+        } else {
+            const alias = toolCall[1];
+            if (alias === undefined) {
+                throw new Error(`unexpected situation: bad toolCallPattern generated`);
+            }
+            const tool = this.tools.find(tool => tool.aliases.some(e => e === alias));
+            if (tool === undefined) {
+                throw new Error(`unexpected situation: toolcall with name (alias) ${JSON.stringify(alias)}`);
+            }
+            const args = Object.fromEntries((toolCall[2] ?? "").matchAll(/ ([a-zA-Z0-9_]+)="([^"]*)"/y).toArray().map(
+                e => [e[1] ?? "", (e[2] ?? "").replaceAll(/&[a-zA-Z0-9_#-]+;/g, m => this.strings.xmlEscapes[m] ?? m)] as [string, string]
+            ));
+            const grammar = this.strings.grammar[tool.name] ?? (args["syntax"] === undefined ? null : this.strings.grammar[args["syntax"]]) ?? null;
+            await line.setSampler([
+                ...(grammar === null ? [] : [{ type: "grammar", grammar, root: "root" } as SamplerParam]),
+                ...this.samplers.tool_call[tool.name],
+            ], p4);
+            const marker = new RegExp(`<${tags.tool_call}(?=\s|>)[^>]*>|</${tags.tool_call}>`, "gu");
+            let depth = 1;
+            const maxTokens = this.numbers.toolCallMaxTokens[tool.name];
+            const toolBody = await line.pull({
+                ...(maxTokens === null ? {} : { max_tokens: maxTokens }),
+                eog_stop: true,
+                stop_predicate: ({ token, text }) => {
+                    if (token.control) {
+                        marker.lastIndex = 0;
+                    }
+                    const lastIndex = marker.lastIndex;
+                    const m = marker.exec(text);
+                    if (m === null) {
+                        marker.lastIndex = lastIndex;
+                        return false;
+                    } else {
+                        if (m[0].startsWith("</")) {
+                            depth--;
+                        } else {
+                            depth++;
+                        }
+                        return depth <= 0;
+                    }
+                }
+            });
+        }
 
         await line.free();
     }
     public formatMemoriesList(memories: MemoContent[], patterns: { main: string, fact: string, rule: string, task: string }) {
         return sprintf(patterns.main, {
-            tags: this.tags,
+            tags: this.strings.tags,
             memories: {
                 entries: memories.map((e, i) => sprintf(patterns[e.type], {
-                    tags: this.tags,
+                    tags: this.strings.tags,
                     memo: {
                         index: i + 1,
                         briefly: e.briefly,
@@ -345,30 +458,30 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     }
     public formatRecallResult(memories: MemoContent[]) {
         return memories.length === 0 ? "" : this.formatMemoriesList(memories, {
-            main: this.patterns.recallResult,
-            fact: this.patterns.recallResultFactEntry,
-            rule: this.patterns.recallResultRuleEntry,
-            task: this.patterns.recallResultTaskEntry
+            main: this.strings.patterns.recallResult,
+            fact: this.strings.patterns.recallResultFactEntry,
+            rule: this.strings.patterns.recallResultRuleEntry,
+            task: this.strings.patterns.recallResultTaskEntry
         });
     }
     public formatRecallSelector(memories: MemoContent[]) {
         return this.formatMemoriesList(memories, {
-            main: this.patterns.recallSelector,
-            fact: this.patterns.recallSelectorFactEntry,
-            rule: this.patterns.recallSelectorRuleEntry,
-            task: this.patterns.recallSelectorTaskEntry
+            main: this.strings.patterns.recallSelector,
+            fact: this.strings.patterns.recallSelectorFactEntry,
+            rule: this.strings.patterns.recallSelectorRuleEntry,
+            task: this.strings.patterns.recallSelectorTaskEntry
         });
     }
     public async formatTask(task: MemoContent & { type: "task" }) {
         const dependencies = (await Promise.all(task.dependencies.map(name => this.memory.getMemo(name)))).filter(e => e?.content?.type === "task") as Memo[];
-        return sprintf(this.patterns.task, {
-            tags: this.tags,
+        return sprintf(this.strings.patterns.task, {
+            tags: this.strings.tags,
             task: {
-                dependencies: dependencies.length === 0 ? "" : sprintf(this.patterns.taskDependencies, {
-                    tags: this.tags,
+                dependencies: dependencies.length === 0 ? "" : sprintf(this.strings.patterns.taskDependencies, {
+                    tags: this.strings.tags,
                     dependencies: {
-                        entries: dependencies.map((e, i) => sprintf(this.patterns.taskDependenciesEntry, {
-                            tags: this.tags,
+                        entries: dependencies.map((e, i) => sprintf(this.strings.patterns.taskDependenciesEntry, {
+                            tags: this.strings.tags,
                             dependency: {
                                 index: i + 1,
                                 briefly: e.content.briefly,
@@ -393,7 +506,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
 }
 
 
-export const TagNameScheme = z.string().regex(/^[a-zA-Z_0-9]+$/);
+export const NameScheme = z.string().regex(/^[a-zA-Z_0-9]+$/);
 export const MainParamsScheme = z.object({
     embeddingModel: z.string().optional(),
     embedderParams: z.object({
@@ -426,11 +539,23 @@ export const MainParamsScheme = z.object({
         multi: z.boolean(),
     }),
     randomSeed: z.union([z.string(), z.null()]),
-    taskSamplerMain: SamplerConstructorScheme,
-    tags: z.object({
-        think: TagNameScheme,
-        select_memories: TagNameScheme,
-        step_status: TagNameScheme,
+    samplers: z.object({
+        taskReasoning: SamplerConstructorScheme,
+        tool_call: z.record(z.enum(["writefile", "readfile", "bash", "python"]), SamplerConstructorScheme),
+    }),
+    strings: z.object({
+        tags: z.object({
+            tool_call: NameScheme,
+            select_memories: NameScheme,
+            step_status: NameScheme,
+        }),
+        tool_names: z.object({
+            writefile: z.array(NameScheme),
+            readfile: z.array(NameScheme),
+            bash: z.array(NameScheme),
+            python: z.array(NameScheme),
+        }),
+        xmlEscapes: z.record(z.string().regex(/^&[a-zA-Z0-9_#-]+;$/u), z.string()),
     }),
     numbers: z.object({
         vectorIndexThreads: z.int().positive(),
@@ -440,6 +565,7 @@ export const MainParamsScheme = z.object({
         recallMinDistance: z.number(),
         recallMaxMemories: z.int().positive(),
         recallSelectorMaxTokens: z.int().positive(),
+        toolCallMaxTokens: z.record(z.enum(["writefile", "readfile", "bash", "python"]), z.union([z.int().positive(), null])),
     }),
 });
 export type MainParams = z.output<typeof MainParamsScheme>;
@@ -535,23 +661,28 @@ export async function main(params?: MainParams) {
         memoryIds,
         rng: new Yurandom(params.randomSeed ?? `${process.pid}_${Date.now()}`),
         vectorNormalizer,
-        taskSamplerMain: params.taskSamplerMain,
-        tags: params.tags,
-        patterns: {
-            systemPrompt: await rp("system-prompt.md"),
-            task: await rp("task.md"),
-            taskDependencies: await rp("task-dependencies.md"),
-            taskDependenciesEntry: await rp("task-dependencies-entry.md"),
-            recallSelector: await rp("recall-selector.md"),
-            recallSelectorFactEntry: await rp("recall-selector-fact.md"),
-            recallSelectorRuleEntry: await rp("recall-selector-rule.md"),
-            recallSelectorTaskEntry: await rp("recall-selector-task.md"),
-            recallResult: await rp("recall-result.md"),
-            recallResultFactEntry: await rp("recall-result-fact.md"),
-            recallResultRuleEntry: await rp("recall-result-rule.md"),
-            recallResultTaskEntry: await rp("recall-result-task.md"),
-            taskGrammarMain: await rp("task-grammar-main.gbnf"),
-        },
+        samplers: params.samplers,
+        strings: Object.assign(Object.assign({}, params.strings), {
+            patterns: {
+                systemPrompt: await rp("system-prompt.md"),
+                task: await rp("task.md"),
+                taskDependencies: await rp("task-dependencies.md"),
+                taskDependenciesEntry: await rp("task-dependencies-entry.md"),
+                recallSelector: await rp("recall-selector.md"),
+                recallSelectorFactEntry: await rp("recall-selector-fact.md"),
+                recallSelectorRuleEntry: await rp("recall-selector-rule.md"),
+                recallSelectorTaskEntry: await rp("recall-selector-task.md"),
+                recallResult: await rp("recall-result.md"),
+                recallResultFactEntry: await rp("recall-result-fact.md"),
+                recallResultRuleEntry: await rp("recall-result-rule.md"),
+                recallResultTaskEntry: await rp("recall-result-task.md"),
+            },
+            grammar: Object.fromEntries(await Promise.all(
+                (await fs.readdir(path.join(activeFolder, "grammar")))
+                    .map(name => path.join(activeFolder, "grammar", name))
+                    .map(file => fs.readFile(file, { encoding: "utf-8" }).then(content => [file, content] as [string, string]))
+            )),
+        }),
         numbers: params.numbers,
     });
     app.on("close", () => process.exit(0));

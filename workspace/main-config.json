@@ -40,15 +40,34 @@
     "multi": false
   },
   "randomSeed": null,
-  "taskSamplerMain": [
-    {
-      "type": "greedy"
-    }
-  ],
+  "samplers": {
+    "taskReasoning": [
+      {
+        "type": "greedy"
+      }
+    ]
+  },
   "tags": {
-    "think": "think",
+    "tool_call": "tool_call",
     "select_memories": "select",
     "step_status": "status"
+  },
+  "tool_names": {
+    "writefile": [
+      "write_file"
+    ],
+    "readfile": [
+      "read_file"
+    ],
+    "bash": [
+      "shell",
+      "bash",
+      "run_bash"
+    ],
+    "python": [
+      "python",
+      "run_python"
+    ]
   },
   "numbers": {
     "vectorIndexThreads": 6,
@@ -57,6 +76,12 @@
     "minimalRecallQueryLength": 100,
     "recallMinDistance": 0.95,
     "recallMaxMemories": 10,
-    "recallSelectorMaxTokens": 60
+    "recallSelectorMaxTokens": 60,
+    "toolCallMaxTokens": {
+      "writefile": null,
+      "readfile": null,
+      "bash": 5000,
+      "python": 8000
+    }
   }
 }

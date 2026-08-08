@@ -1,5 +1,0 @@
-root ::= think tools status
-think ::= "<%(tags.think)s>" %(patterns.think_content)s "</%(tags.think)s>"
-tools ::= "tools"
-status ::= "<%(tags.step_status)s>" ws? ( ( "in" ws "progress" ) | ( "task" ws "completed" ) ) ws? "</%(tags.step_status)s>"
-ws ::= [ \n]+
