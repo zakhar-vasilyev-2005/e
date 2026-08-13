@@ -1,3 +1,3 @@
 # Memory context
 Here are some relevant memories.
-%(memories.entries)s
+%(memories.entries.trim)s

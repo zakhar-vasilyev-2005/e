@@ -1,2 +1,2 @@
 ## Solved depencenceis:
-%(dependencies.entries)s
+%(dependencies.entries.trim)s

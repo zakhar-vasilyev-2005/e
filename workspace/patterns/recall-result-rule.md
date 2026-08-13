@@ -1,2 +1,2 @@
 ## Memory %(memo.index)s (instruction):
-%(memo.body)s
+%(memo.body.trim)s

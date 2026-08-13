@@ -1,2 +1,2 @@
 ## Memory %(memo.index)s (suspended task):
-%(memo.body)s
+%(memo.body.trim)s

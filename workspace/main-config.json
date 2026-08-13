@@ -45,11 +45,38 @@
       {
         "type": "greedy"
       }
+    ],
+    "tool_call": {
+      "writefile": [
+        {
+          "type": "greedy"
+        }
+      ],
+      "readfile": [
+        {
+          "type": "greedy"
+        }
+      ],
+      "bash": [
+        {
+          "type": "greedy"
+        }
+      ],
+      "python": [
+        {
+          "type": "greedy"
+        }
+      ]
+    },
+    "recall_selector": [
+      {
+        "type": "greedy"
+      }
     ]
   },
   "tags": {
     "tool_call": "tool_call",
-    "select_memories": "select",
+    "askRelevantMemories": "select",
     "step_status": "status"
   },
   "tool_names": {
@@ -67,6 +94,12 @@
     "python": [
       "python",
       "run_python"
+    ],
+    "task_done": [
+      "notify_task_finished"
+    ],
+    "task_split": [
+      "split_task"
     ]
   },
   "numbers": {
@@ -78,10 +111,15 @@
     "recallMaxMemories": 10,
     "recallSelectorMaxTokens": 60,
     "toolCallMaxTokens": {
-      "writefile": null,
-      "readfile": null,
       "bash": 5000,
       "python": 8000
+    },
+    "stepTokensMax": 1000,
+    "recallTriggerEntropy": 6,
+    "askMaxIterations": {
+      "askRaw": 10,
+      "askEnum": 10,
+      "askRelevantMemories": 10
     }
   }
 }
