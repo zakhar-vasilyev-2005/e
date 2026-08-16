@@ -300,6 +300,7 @@ export class Agent extends EventEmitter<AgentEvents> {
                         break;
                     }
                 }
+                    //
                 let toolCall: RegExpExecArray | undefined;
                 while (true) {
                     this.regexes.toolCall.lastIndex = 0;
@@ -313,6 +314,7 @@ export class Agent extends EventEmitter<AgentEvents> {
                         break;
                     }
                 }
+                
                 const toolResult = await this.processToolCall(line, toolCall);
                 if (toolResult.tool === "task_done" || toolResult.tool === "split_task") {
                     break;
