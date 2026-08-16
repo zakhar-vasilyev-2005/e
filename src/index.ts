@@ -63,8 +63,9 @@ export type AgentParams = {
     };
     numbers: MainParams["numbers"],
     samplers: MainParams["samplers"],
+    toolParams: MainParams["toolParams"],
 }
-export type ToolName = keyof MainParams["strings"]["tool_names"];
+export type ToolName = keyof MainParams["toolParams"];
 export type ToolResult = {
     tool: ToolName,
     text: string,
@@ -109,6 +110,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly samplers: AgentParams["samplers"] & {
         tool_call_header: SamplerParam,
     };
+    public readonly toolParams: AgentParams["toolParams"];
     public readonly tools: {
         name: ToolName,
         aliases: string[],
@@ -138,6 +140,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         this.rng = params.rng;
         this.vectorNormalizer = params.vectorNormalizer;
         this.strings = Object.assign(Object.assign({}, params.strings), { toolCallTrigger: `<${params.strings.tags.tool_call} name=\"` });
+        this.toolParams = params.toolParams;
         const { tools, toolArgs, toolHeaderMaxLength } = (() => {
             const toolArgs: { [k in ToolArg]: string } = {
                 syntax: `" syntax=\\"" ( ${Object.keys(this.strings.grammar)} ) "\\""`,
@@ -153,7 +156,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             };
             const tools = (() => {
                 type Args = { required: string[], optional: string[] };
-                const tool_args: { [k in keyof (typeof this.strings.tool_names)]: Args } = {
+                const tool_args: { [k in keyof (typeof this.toolParams)]: Args } = {
                     bash: {
                         required: [],
                         optional: ["timeout", "lines"],
@@ -179,7 +182,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
                         optional: [],
                     },
                 };
-                return Object.entries(this.strings.tool_names).map(([k, v]) => {
+                return Object.entries(this.toolParams).map(([k, v]) => [k, v.tool_names] as [string, typeof v.tool_names]).map(([k, v]) => {
                     const args: Args = (tool_args as Record<string, Args>)[k] ?? { required: [], optional: [] };
                     return {
                         name: k,
@@ -350,7 +353,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         const lines = await this.modelClient.exec("line_list", null);
         await Promise.all(lines.map(e => { this.modelClient.exec("line_free", { line_id: e.line_id }) }));
         console.log("CONNECTED");
-        await this.runTask((await this.addMemo({
+        await this.executeTaskPlain((await this.addMemo({
             body: "Do something.",
             briefly: "Short task.",
             type: "task",
@@ -368,7 +371,10 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             }
         }
     }
-    public async runTask(task: MemoContent & { type: "task" }) {
+    public async executeTask(task: MemoContent & { type: "task" }) {
+        // TODO: later add splitting task (when needed) and pushing tasks into queue
+    }
+    public async executeTaskPlain(task: MemoContent & { type: "task" }) {
         const pre = this.modelClient.prefixes;
         const taskText = await this.formatTask(task);
         let messages: Message[] = [];
@@ -539,11 +545,11 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         const grammar = this.strings.grammar[tool.name] ?? (args["syntax"] === undefined ? null : this.strings.grammar[args["syntax"]]) ?? null;
         await line.setSampler([
             ...(grammar === null ? [] : [{ type: "grammar", grammar, root: "root" } as SamplerParam]),
-            ...(this.samplers.tool_call[tool.name] ?? [{ type: "greedy" }]),
+            ...(this.toolParams[tool.name].sampler),
         ], line.tokens.length);
         const marker = new RegExp(`<${tags.tool_call}(?=\s|>)[^>]*>|</${tags.tool_call}>`, "gu");
         let depth = 1;
-        const maxTokens = this.numbers.toolCallMaxTokens[tool.name] as number | undefined;
+        const maxTokens = this.toolParams[tool.name].max_tokens as number | undefined;
         let lastMatch: RegExpExecArray | null = null;
         const toolBody = await line.pull({
             ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
@@ -563,19 +569,22 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
                 }
             }
         });
+
+        // TODO: integrity must be higher
         const toolText = (toolBody.text ?? "").slice(0, (lastMatch as RegExpExecArray | null)?.index);
         const toolResult = await this.toolCall(tool.name, args, toolText);
         await line.step(pre.assistantToUser, toolResult.text, pre.userToAssistant);
         return toolResult;
     }
     public async toolCall(tool: ToolName, args: Record<string, string>, text: string): Promise<ToolResult> {
+        // TODO: later
         return { tool, text: "" };
     }
     public formatPattern(pattern: string, args: object = {}) {
         return sprintf(pattern, Object.assign({
             tags: this.strings.tags,
             date: new Date(),
-            tool_names: this.strings.tool_names,
+            toolParams: this.toolParams,
         }, args));
     }
     public formatMemoriesList(memories: MemoContent[], patterns: { main: string, fact: string, rule: string, task: string }) {
@@ -649,11 +658,15 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
 
 
 
-
-
-// TODO: move all tool params into /tools of main-config.json
+// TODO: update main-config.json
+// TODO: create class that puts vector index file operations into one object (memory-ids.json ant etc.)
 
 export const NameScheme = z.string().regex(/^[a-zA-Z_0-9]+$/);
+export const ToolParamsScheme = z.object({
+    tool_names: z.array(NameScheme),
+    max_tokens: z.int().positive(),
+    sampler: SamplerConstructorScheme,
+});
 export const MainParamsScheme = z.object({
     embeddingModel: z.string().optional(),
     embedderParams: z.object({
@@ -688,7 +701,6 @@ export const MainParamsScheme = z.object({
     randomSeed: z.union([z.string(), z.null()]),
     samplers: z.object({
         taskReasoning: SamplerConstructorScheme,
-        tool_call: z.record(z.enum(["writefile", "readfile", "bash", "python", "task_done", "split_task"]), SamplerConstructorScheme),
         recall_selector: SamplerConstructorScheme,
     }),
     strings: z.object({
@@ -698,14 +710,6 @@ export const MainParamsScheme = z.object({
             step_status: NameScheme,
             ask_raw: NameScheme,
             ask_enum: NameScheme,
-        }),
-        tool_names: z.object({
-            writefile: z.array(NameScheme),
-            readfile: z.array(NameScheme),
-            bash: z.array(NameScheme),
-            python: z.array(NameScheme),
-            task_done: z.array(NameScheme),
-            split_task: z.array(NameScheme),
         }),
         xmlEscapes: z.record(z.string().regex(/^&[a-zA-Z0-9_#-]+;$/u), z.string()),
     }),
@@ -718,7 +722,6 @@ export const MainParamsScheme = z.object({
         recallMaxMemories: z.int().positive(),
         recallSelectorMaxTokens: z.int().positive(),
         recallSelectorMaxIterations: z.int().positive(),
-        toolCallMaxTokens: z.record(z.enum(["writefile", "readfile", "bash", "python", "task_done", "split_task"]), z.int().positive()),
         stepTokensMax: z.int().positive(),
         recallTriggerEntropy: z.number().nonnegative(),
         askMaxIterations: z.object({
@@ -726,6 +729,14 @@ export const MainParamsScheme = z.object({
             askEnum: z.int().positive(),
             askRelevantMemories: z.int().positive(),
         }),
+    }),
+    toolParams: z.object({
+        writefile: ToolParamsScheme,
+        readfile: ToolParamsScheme,
+        bash: ToolParamsScheme,
+        python: ToolParamsScheme,
+        task_done: ToolParamsScheme,
+        split_task: ToolParamsScheme,
     }),
 });
 export type MainParams = z.output<typeof MainParamsScheme>;
@@ -845,6 +856,7 @@ export async function main(params?: MainParams) {
                     .map(file => fs.readFile(file, { encoding: "utf-8" }).then(content => [file, content] as [string, string]))
             )),
         }),
+        toolParams: params.toolParams,
         numbers: params.numbers,
     });
     app.on("close", () => process.exit(0));
