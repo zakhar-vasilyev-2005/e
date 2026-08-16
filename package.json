@@ -12,6 +12,7 @@
   "keywords": [],
   "type": "module",
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^26.1.1",
     "@types/sprintf-js": "^1.1.4",
@@ -19,6 +20,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "better-sqlite3": "^13.0.3",
     "cheerio": "^1.2.0",
     "fs-extra": "^11.3.6",
     "gray-matter": "^4.0.3",

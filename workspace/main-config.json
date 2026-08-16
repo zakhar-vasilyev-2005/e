@@ -1,4 +1,5 @@
 {
+  "$schema": "./main-config.schema.json",
   "embedderParams": {
     "port": 39512,
     "timeout": 500,
@@ -32,94 +33,145 @@
       "stderr": "inherit"
     }
   },
-  "vectorIndexParams": {
-    "quantization": "f32",
-    "connectivity": 32,
-    "expansion_add": 256,
-    "expansion_search": 128,
-    "multi": false
-  },
   "randomSeed": null,
   "samplers": {
-    "taskReasoning": [
-      {
-        "type": "greedy"
-      }
-    ],
-    "tool_call": {
-      "writefile": [
-        {
-          "type": "greedy"
-        }
-      ],
-      "readfile": [
-        {
-          "type": "greedy"
-        }
-      ],
-      "bash": [
-        {
-          "type": "greedy"
-        }
-      ],
-      "python": [
-        {
-          "type": "greedy"
-        }
-      ]
-    },
     "recall_selector": [
       {
         "type": "greedy"
       }
-    ]
-  },
-  "tags": {
-    "tool_call": "tool_call",
-    "askRelevantMemories": "select",
-    "step_status": "status"
-  },
-  "tool_names": {
-    "writefile": [
-      "write_file"
     ],
-    "readfile": [
-      "read_file"
-    ],
-    "bash": [
-      "shell",
-      "bash",
-      "run_bash"
-    ],
-    "python": [
-      "python",
-      "run_python"
-    ],
-    "task_done": [
-      "notify_task_finished"
-    ],
-    "task_split": [
-      "split_task"
+    "taskReasoning": [
+      {
+        "type": "dist",
+        "seed": 42
+      }
     ]
   },
   "numbers": {
-    "vectorIndexThreads": 6,
-    "memoryIndexSaveInterval": 10000,
-    "autoRecallQueryLength": 800,
-    "minimalRecallQueryLength": 100,
-    "recallMinDistance": 0.95,
-    "recallMaxMemories": 10,
-    "recallSelectorMaxTokens": 60,
-    "toolCallMaxTokens": {
-      "bash": 5000,
-      "python": 8000
-    },
-    "stepTokensMax": 1000,
-    "recallTriggerEntropy": 6,
     "askMaxIterations": {
-      "askRaw": 10,
+      "askRaw": 50,
       "askEnum": 10,
       "askRelevantMemories": 10
+    },
+    "autoRecallQueryLength": 1200,
+    "minimalRecallQueryLength": 200,
+    "recallMaxMemories": 5,
+    "recallMinDistance": 0.95,
+    "recallSelectorMaxTokens": 60,
+    "recallTriggerEntropy": 6,
+    "stepTokensMax": 1000
+  },
+  "strings": {
+    "tags": {
+      "ask_enum": "return",
+      "ask_raw": "return",
+      "askRelevantMemories": "select",
+      "tool_call": "tool_call"
+    },
+    "xmlEscapes": {
+      "&lt;": "<",
+      "&gt;": ">",
+      "&amp;": "&",
+      "&quot;": "\"",
+      "&apos;": "'"
+    }
+  },
+  "toolParams": {
+    "bash": {
+      "max_tokens": 2000,
+      "sampler": [
+        {
+          "type": "greedy"
+        }
+      ],
+      "tool_names": [
+        "bash"
+      ],
+      "grammar": "tool/bash"
+    },
+    "python": {
+      "max_tokens": 2000,
+      "sampler": [
+        {
+          "type": "greedy"
+        }
+      ],
+      "tool_names": [
+        "bash"
+      ],
+      "grammar": "tool/python"
+    },
+    "readfile": {
+      "max_tokens": 2000,
+      "sampler": [
+        {
+          "type": "greedy"
+        }
+      ],
+      "tool_names": [
+        "bash"
+      ],
+      "grammar": "tool/readfile"
+    },
+    "writefile": {
+      "max_tokens": 2000,
+      "sampler": [
+        {
+          "type": "greedy"
+        }
+      ],
+      "tool_names": [
+        "bash"
+      ],
+      "grammar": "tool/writefile"
+    },
+    "split_task": {
+      "max_tokens": 2000,
+      "sampler": [
+        {
+          "type": "greedy"
+        }
+      ],
+      "tool_names": [
+        "bash"
+      ],
+      "grammar": "tool/split_task"
+    },
+    "task_done": {
+      "max_tokens": 2000,
+      "sampler": [
+        {
+          "type": "greedy"
+        }
+      ],
+      "tool_names": [
+        "bash"
+      ],
+      "grammar": "tool/task_done"
+    }
+  },
+  "memo": {
+    "rules": {
+      "vectorIndexConfig": {
+        "connectivity": 32,
+        "expansion_add": 256,
+        "expansion_search": 128,
+        "multi": false,
+        "quantization": "f32"
+      },
+      "vectorIndexThreads": 4,
+      "minDistance": 0.85
+    },
+    "facts": {
+      "vectorIndexConfig": {
+        "connectivity": 32,
+        "expansion_add": 256,
+        "expansion_search": 128,
+        "multi": false,
+        "quantization": "f32"
+      },
+      "vectorIndexThreads": 4,
+      "minDistance": 0.95
     }
   }
 }

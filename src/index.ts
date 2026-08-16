@@ -1,17 +1,17 @@
 import EventEmitter from 'events';
-import { ClientLine, ModelClient, ModelLine, ModelParamsSchema, SamplerConstructorScheme, type ChatRole, type ContentElem, type PullResult, type SamplerConstructor, type SamplerParam } from 'u-llm-server';
+import { ClientLine, ModelClient, ModelLine, ModelParamsSchema, runModel, SamplerConstructorScheme, type ChatRole, type ContentElem, type PullResult, type SamplerConstructor, type SamplerParam } from 'u-llm-server';
 import { createFreeEvent } from './event-util.js';
 import { Yurandom } from 'yurandom/index.js';
-import { Embedder, getModels, type EmbedderCreateParams, type GetModelEntry } from './embedder.js';
+import { Embedder, getModels, type EmbedderCreateParams, type ModelInfo } from './embedder.js';
 import { Index, MetricKind, ScalarKind, type IndexConfig } from 'usearch';
 import path from 'path';
 import fs from 'fs-extra';
-import { MemoDB, readMemo, type Memo, type MemoContent } from './memory.js';
 import z from 'zod';
 import { getFileTree } from './get-file-tree.js';
 import { VectorNormalizerLib, type VectorNormalizer } from './vector-normalizer.js';
 import { readConfig } from './config.js';
 import { sprintf } from 'sprintf-js';
+import { DocumentDB, DocumentDBVectorIndexConfigScheme, type BaseDB } from './memory.js';
 
 
 
@@ -21,6 +21,9 @@ export type DialogueItem = {
 };
 export type Dialogue = DialogueItem[];
 
+
+export type AgentFact = string;
+export type AgentRule = string;
 
 export type RecallQuery = {
     query: string
@@ -34,11 +37,6 @@ export type AgentParams = {
     activeFolder: string,
     modelClient: ModelClient,
     embedder: Embedder,
-    vectorIndexFile: string,
-    vectorIndex: Index,
-    memory: MemoDB,
-    memoryIdsFile: string,
-    memoryIds: Record<string, string>,
     rng: Yurandom,
     vectorNormalizer: VectorNormalizer,
     strings: MainParams["strings"] & {
@@ -56,7 +54,10 @@ export type AgentParams = {
             recallResultRuleEntry: string,
             recallResultTaskEntry: string,
             dialogue: string,
-            dialogueMessage: string,
+            dialogueMessageUser: string,
+            dialogueMessageSystem: string,
+            dialogueMessageAssistant: string,
+            dialogueMessageTool: string,
         },
         grammar: Record<string, string>,
         xmlEscapes: Record<string, string>,
@@ -64,6 +65,8 @@ export type AgentParams = {
     numbers: MainParams["numbers"],
     samplers: MainParams["samplers"],
     toolParams: MainParams["toolParams"],
+    rules: BaseDB<AgentRule>,
+    facts: BaseDB<AgentFact>,
 }
 export type ToolName = keyof MainParams["toolParams"];
 export type ToolResult = {
@@ -90,17 +93,10 @@ export type AskEnumParams<T extends Record<string | number | symbol, string>> = 
 export type ToolArg = "syntax" | "lines" | "timeout" | "path";
 export type Message = { role: ChatRole, content: string };
 
-export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
+export class Agent extends EventEmitter<AgentEvents> {
     public readonly activeFolder: string;
     public readonly modelClient: ModelClient;
     public readonly embedder: Embedder;
-    public readonly vectorIndexFile: string;
-    public readonly vectorIndex: Index;
-    public memoryIndexSaveLoopRunning: boolean = false;
-    public readonly memory: MemoDB;
-    public readonly memoryIdsFile: string;
-    public readonly memoryIds: Record<string, string>;
-    public readonly memoryIdsForName: Record<string, string[]>;
     public readonly rng: Yurandom;
     public readonly vectorNormalizer: VectorNormalizer;
     public readonly strings: AgentParams["strings"] & { toolCallTrigger: string };
@@ -110,7 +106,6 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly samplers: AgentParams["samplers"] & {
         tool_call_header: SamplerParam,
     };
-    public readonly toolParams: AgentParams["toolParams"];
     public readonly tools: {
         name: ToolName,
         aliases: string[],
@@ -122,25 +117,19 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
     public readonly regexes: {
         toolCall: RegExp,
     };
+    public readonly initialParams: AgentParams;
+    public readonly rules: BaseDB<AgentRule>;
+    public readonly facts: BaseDB<AgentFact>;
     public constructor(params: AgentParams) {
         super();
+        this.initialParams = params;
         this.activeFolder = params.activeFolder;
         this.modelClient = params.modelClient;
         this.embedder = params.embedder;
-        this.vectorIndexFile = params.vectorIndexFile;
-        this.vectorIndex = params.vectorIndex;
-        this.memory = params.memory;
-        this.memoryIdsFile = params.memoryIdsFile;
-        this.memoryIds = params.memoryIds;
-        this.memoryIdsForName = {};
-        for (const id in this.memoryIds) {
-            const name = this.memoryIds[id] as string;
-            this.memoryIdsForName[name] = [...(this.memoryIdsForName[id] ?? []), id];
-        }
         this.rng = params.rng;
         this.vectorNormalizer = params.vectorNormalizer;
         this.strings = Object.assign(Object.assign({}, params.strings), { toolCallTrigger: `<${params.strings.tags.tool_call} name=\"` });
-        this.toolParams = params.toolParams;
+        const tags = this.strings.tags;
         const { tools, toolArgs, toolHeaderMaxLength } = (() => {
             const toolArgs: { [k in ToolArg]: string } = {
                 syntax: `" syntax=\\"" ( ${Object.keys(this.strings.grammar)} ) "\\""`,
@@ -156,7 +145,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             };
             const tools = (() => {
                 type Args = { required: string[], optional: string[] };
-                const tool_args: { [k in keyof (typeof this.toolParams)]: Args } = {
+                const tool_args: { [k in keyof (typeof this.initialParams.toolParams)]: Args } = {
                     bash: {
                         required: [],
                         optional: ["timeout", "lines"],
@@ -182,7 +171,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
                         optional: [],
                     },
                 };
-                return Object.entries(this.toolParams).map(([k, v]) => [k, v.tool_names] as [string, typeof v.tool_names]).map(([k, v]) => {
+                return Object.entries(this.initialParams.toolParams).map(([k, v]) => [k, v.tool_names] as [string, typeof v.tool_names]).map(([k, v]) => {
                     const args: Args = (tool_args as Record<string, Args>)[k] ?? { required: [], optional: [] };
                     return {
                         name: k,
@@ -204,7 +193,6 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             return { tools, toolArgs, toolHeaderMaxLength };
         })();
         this.numbers = Object.assign(Object.assign({}, params.numbers), { toolHeaderMaxLength });
-        const tags = this.strings.tags;
         this.tools = tools;
         this.regexes = {
             toolCall: new RegExp((
@@ -231,121 +219,27 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
                 triggers: [this.strings.toolCallTrigger],
             } as SamplerParam,
         });
+        this.rules = params.rules;
+        this.facts = params.facts;
     }
-    public beforeRecall: Promise<void>[] = [];
-    public async findMemos(query: RecallQuery, maxCount: number = 5, minDistance: number = 0): Promise<{ memo: Memo, distance: number }[]> {
-        if (query.name !== undefined) {
-            const memo = this.memory.getMemo(query.name);
-            return memo === undefined ? [] : [{ memo, distance: 1 }];
-        }
-        if (this.beforeRecall.length !== 0) {
-            await Promise.all(this.beforeRecall);
-            this.beforeRecall = [];
-        }
-        const rawQueryVector = Float32Array.from(await this.embedder.embedding(query.query));
-        const queryVector = this.vectorNormalizer.normalize(rawQueryVector, 1);
-        const result = this.vectorIndex.search(queryVector, maxCount, this.numbers.vectorIndexThreads);
-        const toDelete: bigint[] = [];
-        const memories: { memo: Memo, distance: number }[] = [];
-        for (let i = 0; i < maxCount; i++) {
-            const vectorId = result.keys[i];
-            const distance = result.distances[i];
-            if (vectorId === undefined || distance === undefined) {
-                continue;
-            }
-            const name = this.memoryIds[String(vectorId)];
-            if (name === undefined) {
-                toDelete.push(vectorId);
-            } else {
-                const memo = this.memory.getMemo(name);
-                if (memo === undefined) {
-                    toDelete.push(vectorId);
-                    delete this.memoryIds[String(vectorId)];
-                    delete this.memoryIdsForName[name];
-                } else {
-                    memories.push({ memo, distance });
-                }
-            }
-        }
-        this.vectorIndex.remove(toDelete);
-        if (toDelete.length !== 0) {
-            return await this.findMemos(query, maxCount);
-        }
-        return memories.filter(e => e.distance >= minDistance);
-    }
-    public async addMemo(content: MemoContent, name: `${string}.md`) {
-        if (this.memory.getMemo(name) !== undefined) {
-            await this.removeMemo(name);
-        }
-        const memo = await this.memory.addMemo(content, name);
-        const keys = content.keys ?? [];
-        const idsAndWeights = keys.map(({ weight }) => {
-            let id: bigint;
-            while (true) {
-                id = BigInt(this.rng.int(100, 1_000_000_000));
-                if (!(String(id) in this.memoryIds)) {
-                    break;
-                }
-            }
-            this.memoryIds[String(id)] = name;
-            this.memoryIdsForName[name] ??= [];
-            this.memoryIdsForName[name].push(String(id));
-            return { id, weight };
-        });
-        const ids = idsAndWeights.map(e => e.id);
-        if (keys.length !== 0) {
-            const weights = idsAndWeights.map(e => e.weight);
-            const vectors = new Float32Array(keys.length * this.vectorIndex.dimensions());
-            const vectorsRaw = await this.embedder.embeddingBatched(keys.map(e => e.keyContent));
-            let offset = 0;
-            for (const vec of vectorsRaw) {
-                const multiplier = weights.pop();
-                if (multiplier === undefined) { throw new Error(`unexpected situation: mismatch in weights count and embeddings count`); }
-                const normalizedVec = this.vectorNormalizer.normalize(vec, multiplier);
-                vectors.set(normalizedVec, offset);
-                offset += vec.length;
-            }
-            this.vectorIndex.add(ids, vectors);
-        }
-        return memo;
-    }
-    public async removeMemo(name: `${string}.md`) {
-        await this.memory.removeMemo(name);
-        const ids = this.memoryIdsForName[name] ?? [];
-        delete this.memoryIdsForName[name];
-        for (const id of ids) {
-            delete this.memoryIds[id];
-        }
-    }
-    public async updateMemoryIndex() {
-        this.vectorIndex.save(this.vectorIndexFile);
-        await fs.writeJson(this.memoryIdsFile, this.memoryIds, { encoding: "utf-8" });
+    public async recall(query: string): Promise<{ document: string, entry: AgentFact | AgentRule }[]> {
+        const rules = await this.rules.find(query, this.numbers.recall.rules.maxOutput);
+        const facts = await this.facts.find(query, this.numbers.recall.facts.maxOutput);
+        return [
+            ...rules.filter(e => e.distance >= this.numbers.recall.rules.minDistance && e.similarity >= this.numbers.recall.rules.minSimilarity),
+            ...facts.filter(e => e.distance >= this.numbers.recall.facts.minDistance && e.similarity >= this.numbers.recall.facts.minSimilarity),
+        ].filter(e => e.distance >= this.numbers.recall.minDistance && e.similarity >= this.numbers.recall.minSimilarity).toSorted(
+            (a, b) => b.similarity - a.similarity
+        ).slice(0, this.numbers.recall.maxOutputTotal).map(
+            e => ({ document: e.document.name, entry: e.document.data.content })
+        );
     }
     public async run() {
-        const vectorIndexMtimeMs = (await fs.stat(this.vectorIndexFile)).mtimeMs;
-        const initialMemories = Object.fromEntries(this.memory.getMemos().map(e => [e.file, e]));
-        await Promise.all((await getFileTree(this.memory.dir)).map(async file => {
-            const memo = initialMemories[file];
-            if (memo === undefined || memo.mtime.getTime() >= vectorIndexMtimeMs) {
-                const loadedMemo = await readMemo(this.memory.dir, file);
-                this.addMemo(loadedMemo.content, loadedMemo.name);
-                return;
-            }
-        }));
-        const memoryIndexSaveLoop = async () => {
-            await this.updateMemoryIndex();
-            if (this.memoryIndexSaveLoopRunning) {
-                setTimeout(memoryIndexSaveLoop, this.numbers.memoryIndexSaveInterval);
-            }
-        };
-        this.memoryIndexSaveLoopRunning = true;
-        memoryIndexSaveLoop();
         try {
             await this.main();
         } catch (e) {
             console.error(e);
         } finally {
-            this.memoryIndexSaveLoopRunning = false;
             await this.close();
         }
     }
@@ -353,13 +247,15 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
         const lines = await this.modelClient.exec("line_list", null);
         await Promise.all(lines.map(e => { this.modelClient.exec("line_free", { line_id: e.line_id }) }));
         console.log("CONNECTED");
-        await this.executeTaskPlain((await this.addMemo({
+        /*
+        await this.executeTask((await this.addMemo({
             body: "Do something.",
             briefly: "Short task.",
             type: "task",
             dependencies: [],
             failures: 0,
         }, "temp/short-task.md")).content as any);
+        */
     }
     public async findLineId() {
         let lineId: string;
@@ -371,222 +267,224 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             }
         }
     }
-    public async executeTask(task: MemoContent & { type: "task" }) {
-        // TODO: later add splitting task (when needed) and pushing tasks into queue
-    }
-    public async executeTaskPlain(task: MemoContent & { type: "task" }) {
-        const pre = this.modelClient.prefixes;
-        const taskText = await this.formatTask(task);
-        let messages: Message[] = [];
-        const line = await ClientLine.create(this.modelClient, await this.findLineId());
-        this.modelClient.on("tokens", e => {
-            if (e.line_id === line.lineId) {
-                process.stdout.write(e.input.map(e => e.piece).join(""));
-            }
-        });
-        await line.clear();
-        const systemPrompt = this.formatPattern(this.strings.patterns.systemPrompt);
-        messages.push({ role: "system", content: systemPrompt });
-        messages.push({ role: "user", content: taskText });
-        await this.tryRecall(line, messages, taskText, { prefix: [], suffix: [] });
-        await line.step(pre.userToAssistant);
-        await line.setSampler([this.samplers.tool_call_header, ...this.samplers.taskReasoning], line.tokens.length);
-        let taskStep: PullResult;
-        // each task must be completed in one tool call (+ corrections): either  a toolcall.split_task or tool.bash or other
-        const makeTaskStep = () => line.pull({ eog_stop: true, max_tokens: this.numbers.stepTokensMax, max_entropy: this.numbers.recallTriggerEntropy });
-        while (true) {
-            while (true) {
-                taskStep = await makeTaskStep();
-                messages.push({ role: "assistant", content: taskStep.text ?? "" });
-                if (taskStep.stopReasons.some(e => e === "max_entropy")) {
-                    await this.tryRecall(line, messages);
-                } else {
-                    break;
-                }
-            }
-            let toolCall: RegExpExecArray | undefined;
-            while (true) {
-                this.regexes.toolCall.lastIndex = 0;
-                toolCall = (taskStep.text ?? "").matchAll(this.regexes.toolCall).toArray().at(-1);
-                if (toolCall === undefined) {
-                    await line.cancel();
-                    await line.push(this.strings.toolCallTrigger);
-                    taskStep = await makeTaskStep();
-                    continue;
-                } else {
-                    break;
-                }
-            }
-            const toolResult = await this.processToolCall(line, toolCall);
-            if (toolResult.tool === "task_done" || toolResult.tool === "split_task") {
-                break;
-            }
+    /*    public async executeTask(task: MemoContent & { type: "task" }) {
+            // TODO: later add splitting task (when needed) and pushing tasks into queue
         }
-        // TODO: compress history, make memories, unlink task
-        await line.free();
-    }
-    public async askRaw(params: AskRawParams): Promise<string> {
-        const pre = this.modelClient.prefixes;
-        const { line, currentRole, message, grammar } = params;
-        const tagName = params.tagName ?? this.strings.tags.ask_raw;
-        const p1 = line.tokens.length;
-        if (currentRole !== "user") {
-            await line.push(...{
-                assistant: [pre.assistantToUser],
-                tool: [pre.toolToAssistant, "...", pre.assistantToUser],
-                system: [pre.systemToUser],
-            }[currentRole]);
-        }
-        const p2 = await line.step(
-            ...(message instanceof Array ? message : [message]),
-            pre.userToAssistant
-        );
-        for (let iteration = 0; true; iteration++) {
-            if (iteration >= (params.maxIterations ?? this.numbers.askMaxIterations.askRaw)) {
-                throw new Error(`ask: max iterations reached`);
-            }
-            await line.setSampler([
-                { type: "grammar", grammar, root: "root" },
-                ...this.samplers.recall_selector,
-            ], p2);
-            await line.push(`<${tagName}>`);
-            const res = await line.pull({
-                eog_stop: true,
-                max_tokens: this.numbers.recallSelectorMaxTokens,
+        public async executeTaskPlain(task: MemoContent & { type: "task" }) {
+            const pre = this.modelClient.prefixes;
+            const taskText = await this.formatTask(task);
+            let messages: Message[] = [];
+            const line = await ClientLine.create(this.modelClient, await this.findLineId());
+            this.modelClient.on("tokens", e => {
+                if (e.line_id === line.lineId) {
+                    process.stdout.write(e.input.map(e => e.piece).join(""));
+                }
             });
-            if (res.stopReasons.some(e => e === "max_tokens")) {
-                await line.goto(p2);
-                continue;
-            } else {
-                const m = new RegExp(`^<${tagName}>([\\s\\S]*?)</${tagName}>$`, "u").exec(res.text ?? "");
-                const answer = m?.[1];
-                if (typeof answer !== "string") {
-                    throw new Error(`ask broken: cannot extract answer`);
+            await line.clear();
+            const systemPrompt = this.formatPattern(this.strings.patterns.systemPrompt);
+            messages.push({ role: "system", content: systemPrompt });
+            messages.push({ role: "user", content: taskText });
+            await this.tryRecall(line, messages, taskText, { prefix: [], suffix: [] });
+            await line.step(pre.userToAssistant);
+            await line.setSampler([this.samplers.tool_call_header, ...this.samplers.taskReasoning], line.tokens.length);
+            let taskStep: PullResult;
+            // each task must be completed in one tool call (+ corrections): either  a toolcall.split_task or tool.bash or other
+            const makeTaskStep = () => line.pull({ eog_stop: true, max_tokens: this.numbers.stepTokensMax, max_entropy: this.numbers.recallTriggerEntropy });
+            while (true) {
+                while (true) {
+                    taskStep = await makeTaskStep();
+                    messages.push({ role: "assistant", content: taskStep.text ?? "" });
+                    if (taskStep.stopReasons.some(e => e === "max_entropy")) {
+                        await this.tryRecall(line, messages);
+                    } else {
+                        break;
+                    }
                 }
-                if (params.validator === undefined || params.validator(answer)) {
-                    await line.goto(p1);
-                    return answer;
-                } else {
+                let toolCall: RegExpExecArray | undefined;
+                while (true) {
+                    this.regexes.toolCall.lastIndex = 0;
+                    toolCall = (taskStep.text ?? "").matchAll(this.regexes.toolCall).toArray().at(-1);
+                    if (toolCall === undefined) {
+                        await line.cancel();
+                        await line.push(this.strings.toolCallTrigger);
+                        taskStep = await makeTaskStep();
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+                const toolResult = await this.processToolCall(line, toolCall);
+                if (toolResult.tool === "task_done" || toolResult.tool === "split_task") {
+                    break;
+                }
+            }
+            // TODO: compress history, make memories, unlink task
+            await line.free();
+        }
+        public async askRaw(params: AskRawParams): Promise<string> {
+            const pre = this.modelClient.prefixes;
+            const { line, currentRole, message, grammar } = params;
+            const tagName = params.tagName ?? this.strings.tags.ask_raw;
+            const p1 = line.tokens.length;
+            if (currentRole !== "user") {
+                await line.push(...{
+                    assistant: [pre.assistantToUser],
+                    tool: [pre.toolToAssistant, "...", pre.assistantToUser],
+                    system: [pre.systemToUser],
+                }[currentRole]);
+            }
+            const p2 = await line.step(
+                ...(message instanceof Array ? message : [message]),
+                pre.userToAssistant
+            );
+            for (let iteration = 0; true; iteration++) {
+                if (iteration >= (params.maxIterations ?? this.numbers.askMaxIterations.askRaw)) {
+                    throw new Error(`ask: max iterations reached`);
+                }
+                await line.setSampler([
+                    { type: "grammar", grammar, root: "root" },
+                    ...this.samplers.recall_selector,
+                ], p2);
+                await line.push(`<${tagName}>`);
+                const res = await line.pull({
+                    eog_stop: true,
+                    max_tokens: this.numbers.recallSelectorMaxTokens,
+                });
+                if (res.stopReasons.some(e => e === "max_tokens")) {
                     await line.goto(p2);
                     continue;
-                }
-            }
-        }
-    }
-    public async askEnum<T extends Record<string | number | symbol, string>>(params: AskEnumParams<T>): Promise<keyof T> {
-        const tagName = params.tagName ?? this.strings.tags.ask_enum;
-        const grammar = `root ::= <${tagName}> [ \t]* ( ${Object.values(params.values).map(e => e.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")).join(" | ")} ) [ \t]* </${tagName}>`;
-        const value = (await this.askRaw({
-            line: params.line,
-            currentRole: params.currentRole,
-            grammar,
-            message: params.message,
-            tagName,
-            maxIterations: params.maxIterations ?? this.numbers.askMaxIterations.askEnum
-        })).trim();
-        for (const key of [...Object.getOwnPropertyNames(params.values), ...Object.getOwnPropertySymbols(params.values)]) {
-            const v = params.values[key];
-            if (v !== undefined && v.trim() === value) {
-                return key;
-            }
-        }
-        throw new Error(`askEnum: internal mistake in code (this situation must not happen)`);
-    }
-    public async askRelevantMemories(line: ClientLine, currentRole: ChatRole, memories: MemoContent[]) {
-        const grammarIndices = (indices: number[]): string => {
-            if (indices.length === 0) {
-                throw new Error(`bad argument for grammarIndices: indices length must be >= 1`);
-            } else if (indices.length === 1) {
-                return `"${indices[0]}"`;
-            } else {
-                return `( "${indices[0]}" | "${indices[0]}" "," [ ]* ${grammarIndices(indices.slice(1))} )`;
-            }
-        }
-        const tagName = this.strings.tags.askRelevantMemories
-        const answer = (await this.askRaw({
-            line,
-            currentRole,
-            grammar: `root ::= "<${tagName}>" [ \t]* ( "none" | ${grammarIndices(memories.map((e, i) => i + 1))} ) [ \t]* "</${tagName}>"`,
-            message: this.formatRecallSelector(memories),
-            tagName,
-            maxIterations: this.numbers.askMaxIterations.askRelevantMemories,
-        })).trim().toLowerCase();
-        const selectedIds = answer === "none" ? [] : answer.split(",").map(e => parseInt(e.matchAll(/\d/g).toArray().join("")));
-        return memories.filter((e, i) => selectedIds.some(j => j + 1 === i));
-    }
-    public async tryRecall(line: ClientLine, messages: Message[], query: string | null = null, params: { suffix?: undefined | ContentElem | ContentElem[], prefix?: undefined | ContentElem | ContentElem[] } = {}) {
-        const startPos = line.tokens.length;
-        const memories = (await this.findMemos({ query: query ?? this.formatRecallQuery(messages) }, this.numbers.recallMaxMemories)).map(e => e.memo.content);
-        const selectedMemories = memories.length === 0 ? [] : await this.askRelevantMemories(line, "assistant", memories);
-        await line.goto(startPos);
-        if (selectedMemories.length > 0) {
-            const recallResult = this.formatRecallResult(selectedMemories);
-            messages.push({ role: "user", content: recallResult });
-            const pre = line.client.prefixes;
-            const suffix = params.suffix instanceof Array ? params.suffix : [params.suffix ?? pre.assistantToUser];
-            const prefix = params.prefix instanceof Array ? params.prefix : [params.prefix ?? pre.userToAssistant];
-            await line.step(...prefix, recallResult, ...suffix);
-        }
-    }
-    public async processToolCall(line: ClientLine, header: RegExpExecArray) {
-        const pre = this.modelClient.prefixes;
-        const tags = this.strings.tags;
-        const alias = header[1];
-        if (alias === undefined) {
-            throw new Error(`unexpected situation: bad value in samplers.tool_call_header or regexes.toolCall`);
-        }
-        const tool = this.tools.find(tool => tool.aliases.some(e => e === alias));
-        if (tool === undefined) {
-            throw new Error(`unexpected situation: toolcall with name (alias) ${JSON.stringify(alias)}`);
-        }
-        const args = Object.fromEntries((header[2] ?? "").matchAll(/ ([a-zA-Z0-9_]+)="([^"]*)"/y).toArray().map(
-            e => [e[1] ?? "", (e[2] ?? "").replaceAll(/&[a-zA-Z0-9_#-]+;/g, m => this.strings.xmlEscapes[m] ?? m)] as [string, string]
-        ));
-        const grammar = this.strings.grammar[tool.name] ?? (args["syntax"] === undefined ? null : this.strings.grammar[args["syntax"]]) ?? null;
-        await line.setSampler([
-            ...(grammar === null ? [] : [{ type: "grammar", grammar, root: "root" } as SamplerParam]),
-            ...(this.toolParams[tool.name].sampler),
-        ], line.tokens.length);
-        const marker = new RegExp(`<${tags.tool_call}(?=\s|>)[^>]*>|</${tags.tool_call}>`, "gu");
-        let depth = 1;
-        const maxTokens = this.toolParams[tool.name].max_tokens as number | undefined;
-        let lastMatch: RegExpExecArray | null = null;
-        const toolBody = await line.pull({
-            ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
-            eog_stop: true,
-            stop_predicate: ({ tokensRecievedNow, text }) => {
-                if (tokensRecievedNow.some(e => e.special)) {
-                    marker.lastIndex = 0;
-                }
-                const lastIndex = marker.lastIndex;
-                lastMatch = marker.exec(text ?? "");
-                if (lastMatch === null) {
-                    marker.lastIndex = lastIndex;
-                    return false;
                 } else {
-                    depth += lastMatch[0].startsWith("</") ? -1 : +1;
-                    return depth <= 0;
+                    const m = new RegExp(`^<${tagName}>([\\s\\S]*?)</${tagName}>$`, "u").exec(res.text ?? "");
+                    const answer = m?.[1];
+                    if (typeof answer !== "string") {
+                        throw new Error(`ask broken: cannot extract answer`);
+                    }
+                    if (params.validator === undefined || params.validator(answer)) {
+                        await line.goto(p1);
+                        return answer;
+                    } else {
+                        await line.goto(p2);
+                        continue;
+                    }
                 }
             }
-        });
-
-        // TODO: integrity must be higher
-        const toolText = (toolBody.text ?? "").slice(0, (lastMatch as RegExpExecArray | null)?.index);
-        const toolResult = await this.toolCall(tool.name, args, toolText);
-        await line.step(pre.assistantToUser, toolResult.text, pre.userToAssistant);
-        return toolResult;
-    }
-    public async toolCall(tool: ToolName, args: Record<string, string>, text: string): Promise<ToolResult> {
-        // TODO: later
-        return { tool, text: "" };
-    }
+        }
+        public async askEnum<T extends Record<string | number | symbol, string>>(params: AskEnumParams<T>): Promise<keyof T> {
+            const tagName = params.tagName ?? this.strings.tags.ask_enum;
+            const grammar = `root ::= <${tagName}> [ \t]* ( ${Object.values(params.values).map(e => e.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")).join(" | ")} ) [ \t]* </${tagName}>`;
+            const value = (await this.askRaw({
+                line: params.line,
+                currentRole: params.currentRole,
+                grammar,
+                message: params.message,
+                tagName,
+                maxIterations: params.maxIterations ?? this.numbers.askMaxIterations.askEnum
+            })).trim();
+            for (const key of [...Object.getOwnPropertyNames(params.values), ...Object.getOwnPropertySymbols(params.values)]) {
+                const v = params.values[key];
+                if (v !== undefined && v.trim() === value) {
+                    return key;
+                }
+            }
+            throw new Error(`askEnum: internal mistake in code (this situation must not happen)`);
+        }
+        public async askRelevantMemories(line: ClientLine, currentRole: ChatRole, memories: MemoContent[]) {
+            const grammarIndices = (indices: number[]): string => {
+                if (indices.length === 0) {
+                    throw new Error(`bad argument for grammarIndices: indices length must be >= 1`);
+                } else if (indices.length === 1) {
+                    return `"${indices[0]}"`;
+                } else {
+                    return `( "${indices[0]}" | "${indices[0]}" "," [ ]* ${grammarIndices(indices.slice(1))} )`;
+                }
+            }
+            const tagName = this.strings.tags.askRelevantMemories
+            const answer = (await this.askRaw({
+                line,
+                currentRole,
+                grammar: `root ::= "<${tagName}>" [ \t]* ( "none" | ${grammarIndices(memories.map((e, i) => i + 1))} ) [ \t]* "</${tagName}>"`,
+                message: this.formatRecallSelector(memories),
+                tagName,
+                maxIterations: this.numbers.askMaxIterations.askRelevantMemories,
+            })).trim().toLowerCase();
+            const selectedIds = answer === "none" ? [] : answer.split(",").map(e => parseInt(e.matchAll(/\d/g).toArray().join("")));
+            return memories.filter((e, i) => selectedIds.some(j => j + 1 === i));
+        }
+        public async tryRecall(line: ClientLine, messages: Message[], query: string | null = null, params: { suffix?: undefined | ContentElem | ContentElem[], prefix?: undefined | ContentElem | ContentElem[] } = {}) {
+            const startPos = line.tokens.length;
+            const memories = (await this.findMemos({ query: query ?? this.formatRecallQuery(messages) }, this.numbers.recallMaxMemories)).map(e => e.memo.content);
+            const selectedMemories = memories.length === 0 ? [] : await this.askRelevantMemories(line, "assistant", memories);
+            await line.goto(startPos);
+            if (selectedMemories.length > 0) {
+                const recallResult = this.formatRecallResult(selectedMemories);
+                messages.push({ role: "user", content: recallResult });
+                const pre = line.client.prefixes;
+                const suffix = params.suffix instanceof Array ? params.suffix : [params.suffix ?? pre.assistantToUser];
+                const prefix = params.prefix instanceof Array ? params.prefix : [params.prefix ?? pre.userToAssistant];
+                await line.step(...prefix, recallResult, ...suffix);
+            }
+        }
+        public async processToolCall(line: ClientLine, header: RegExpExecArray) {
+            const pre = this.modelClient.prefixes;
+            const tags = this.strings.tags;
+            const alias = header[1];
+            if (alias === undefined) {
+                throw new Error(`unexpected situation: bad value in samplers.tool_call_header or regexes.toolCall`);
+            }
+            const tool = this.tools.find(tool => tool.aliases.some(e => e === alias));
+            if (tool === undefined) {
+                throw new Error(`unexpected situation: toolcall with name (alias) ${JSON.stringify(alias)}`);
+            }
+            const args = Object.fromEntries((header[2] ?? "").matchAll(/ ([a-zA-Z0-9_]+)="([^"]*)"/y).toArray().map(
+                e => [e[1] ?? "", (e[2] ?? "").replaceAll(/&[a-zA-Z0-9_#-]+;/g, m => this.strings.xmlEscapes[m] ?? m)] as [string, string]
+            ));
+            const grammar = this.strings.grammar[tool.name] ?? (args["syntax"] === undefined ? null : this.strings.grammar[args["syntax"]]) ?? null;
+            await line.setSampler([
+                ...(grammar === null ? [] : [{ type: "grammar", grammar, root: "root" } as SamplerParam]),
+                ...(this.toolParams[tool.name].sampler),
+            ], line.tokens.length);
+            const marker = new RegExp(`<${tags.tool_call}(?=\s|>)[^>]*>|</${tags.tool_call}>`, "gu");
+            let depth = 1;
+            const maxTokens = this.toolParams[tool.name].max_tokens as number | undefined;
+            let lastMatch: RegExpExecArray | null = null;
+            const toolBody = await line.pull({
+                ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
+                eog_stop: true,
+                stop_predicate: ({ tokensRecievedNow, text }) => {
+                    if (tokensRecievedNow.some(e => e.special)) {
+                        marker.lastIndex = 0;
+                    }
+                    const lastIndex = marker.lastIndex;
+                    lastMatch = marker.exec(text ?? "");
+                    if (lastMatch === null) {
+                        marker.lastIndex = lastIndex;
+                        return false;
+                    } else {
+                        depth += lastMatch[0].startsWith("</") ? -1 : +1;
+                        return depth <= 0;
+                    }
+                }
+            });
+    
+            // TODO: integrity must be higher
+            const toolText = (toolBody.text ?? "").slice(0, (lastMatch as RegExpExecArray | null)?.index);
+            const toolResult = await this.toolCall(tool.name, args, toolText);
+            await line.step(pre.assistantToUser, toolResult.text, pre.userToAssistant);
+            return toolResult;
+        }
+        public async toolCall(tool: ToolName, args: Record<string, string>, text: string): Promise<ToolResult> {
+            // TODO: later
+            return { tool, text: "" };
+        }
+        */
     public formatPattern(pattern: string, args: object = {}) {
         return sprintf(pattern, Object.assign({
             tags: this.strings.tags,
             date: new Date(),
-            toolParams: this.toolParams,
+            toolParams: this.initialParams.toolParams,
         }, args));
     }
+    /*
     public formatMemoriesList(memories: MemoContent[], patterns: { main: string, fact: string, rule: string, task: string }) {
         return this.formatPattern(patterns.main, {
             memories: {
@@ -622,10 +520,32 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             task: this.strings.patterns.recallSelectorTaskEntry
         });
     }
+    */
     public formatRecallQuery(messages: Message[]) {
-        // TODO: update to something better (in addition it needs to be cutted to be no longer than a 2000 symbols (or other number of symbols: see in this.numbers))
-        return this.modelClient.scheme({ messages }).text;
+        const patterns = {
+            dialogue: this.strings.patterns.dialogue,
+            user: this.strings.patterns.dialogueMessageUser,
+            system: this.strings.patterns.dialogueMessageSystem,
+            assistant: this.strings.patterns.dialogueMessageAssistant,
+            tool: this.strings.patterns.dialogueMessageTool,
+        };
+        return this.formatPattern(patterns.dialogue, {
+            messages: {
+                entries: messages.map((e, i) => this.formatPattern(patterns[e.role], {
+                    message: {
+                        index: i + 1,
+                        role: e.role,
+                        content: e.content
+                    },
+                    messages: {
+                        count: messages.length,
+                    }
+                })).join(""),
+                count: messages.length,
+            }
+        });
     }
+    /*
     public async formatTask(task: MemoContent & { type: "task" }) {
         const dependencies = (await Promise.all(task.dependencies.map(name => this.memory.getMemo(name)))).filter(e => e?.content?.type === "task") as Memo[];
         return this.formatPattern(this.strings.patterns.task, {
@@ -651,6 +571,7 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
             }
         })
     }
+    */
     public readonly close = createFreeEvent("close", async () => {
         await this.modelClient.close();
     });
@@ -658,16 +579,15 @@ export class Agent extends EventEmitter<AgentEvents> implements AgentParams {
 
 
 
-// TODO: update main-config.json
-// TODO: create class that puts vector index file operations into one object (memory-ids.json ant etc.)
-
 export const NameScheme = z.string().regex(/^[a-zA-Z_0-9]+$/);
 export const ToolParamsScheme = z.object({
     tool_names: z.array(NameScheme),
     max_tokens: z.int().positive(),
     sampler: SamplerConstructorScheme,
+    grammar: z.string().regex(/^[^\0\n\/]+(\/[^\0\n\/]+)*$/u).optional(),
 });
 export const MainParamsScheme = z.object({
+    "$schema": z.literal("./main-config.schema.json"),
     embeddingModel: z.string().optional(),
     embedderParams: z.object({
         port: z.int().min(0).max(65535),
@@ -691,13 +611,6 @@ export const MainParamsScheme = z.object({
             stderr: z.enum(["ignore", "inherit"]),
         }).optional(),
     }),
-    vectorIndexParams: z.object({
-        quantization: z.enum(["f64", "f32", "bf16", "f16", "e5m2", "e4m3", "e3m2", "e2m3", "i8", "u8", "b1"]),
-        connectivity: z.number(),
-        expansion_add: z.number(),
-        expansion_search: z.number(),
-        multi: z.boolean(),
-    }),
     randomSeed: z.union([z.string(), z.null()]),
     samplers: z.object({
         taskReasoning: SamplerConstructorScheme,
@@ -707,27 +620,36 @@ export const MainParamsScheme = z.object({
         tags: z.object({
             tool_call: NameScheme,
             askRelevantMemories: NameScheme,
-            step_status: NameScheme,
             ask_raw: NameScheme,
             ask_enum: NameScheme,
         }),
         xmlEscapes: z.record(z.string().regex(/^&[a-zA-Z0-9_#-]+;$/u), z.string()),
     }),
     numbers: z.object({
-        vectorIndexThreads: z.int().positive(),
-        memoryIndexSaveInterval: z.int().positive(),
-        autoRecallQueryLength: z.number(),
-        minimalRecallQueryLength: z.number(),
-        recallMinDistance: z.number(),
-        recallMaxMemories: z.int().positive(),
-        recallSelectorMaxTokens: z.int().positive(),
-        recallSelectorMaxIterations: z.int().positive(),
         stepTokensMax: z.int().positive(),
-        recallTriggerEntropy: z.number().nonnegative(),
         askMaxIterations: z.object({
             askRaw: z.int().positive(),
             askEnum: z.int().positive(),
             askRelevantMemories: z.int().positive(),
+        }),
+        recall: z.object({
+            autoRecallQueryLength: z.number(),
+            minimalQueryLength: z.number(),
+            minDistance: z.number().nonnegative(),
+            minSimilarity: z.number().min(0).max(1),
+            rules: z.object({
+                minDistance: z.number().nonnegative(),
+                minSimilarity: z.number().min(0).max(1),
+                maxOutput: z.int().positive(),
+            }),
+            facts: z.object({
+                minDistance: z.number().nonnegative(),
+                minSimilarity: z.number().min(0).max(1),
+                maxOutput: z.int().positive(),
+            }),
+            maxOutputTotal: z.int().positive(),
+            recallSelectorMaxTokens: z.int().positive(),
+            triggerEntropy: z.number().nonnegative(),
         }),
     }),
     toolParams: z.object({
@@ -737,6 +659,16 @@ export const MainParamsScheme = z.object({
         python: ToolParamsScheme,
         task_done: ToolParamsScheme,
         split_task: ToolParamsScheme,
+    }),
+    memo: z.object({
+        rules: z.object({
+            vectorIndexConfig: DocumentDBVectorIndexConfigScheme,
+            vectorIndexThreads: z.int().positive(),
+        }),
+        facts: z.object({
+            vectorIndexConfig: DocumentDBVectorIndexConfigScheme,
+            vectorIndexThreads: z.int().positive(),
+        }),
     }),
 });
 export type MainParams = z.output<typeof MainParamsScheme>;
@@ -757,79 +689,39 @@ export async function main(params?: MainParams) {
         embedderParams.fallbackStartServer = Object.assign(Object.assign({}, embedderParams.fallbackStartServer), { llamaServerExecPath });
     }
     const embedder = await Embedder.create(embedderParams);
-    const embeddingModels = await getModels(embedder.port, embedder.host);
-    let embeddingModel: string | undefined = params.embeddingModel;
-    if (embeddingModels.length > 1) {
-        throw new Error(`cannot omit 'embeddingModel' parameter when embedder connection presents multiple models`);
-    } else if (embeddingModels.length === 1) {
-        if (embeddingModel === undefined) {
-            embeddingModel = embeddingModels[0]?.id as string;
-        }
-    } else if (embeddingModels.length === 0) {
-        throw new Error(`embedder connection presents no models`);
-    } else {
-        embeddingModel = embeddingModels[0]?.id as string;
-    }
-    const embeddingModelInfo = embeddingModels.find(e => e.id === embeddingModel) as GetModelEntry;
+    const vectorNormalizer = new VectorNormalizerLib(path.join(path.dirname(import.meta.dirname), "binaries", "utils", "libvector-normalizer.so"));
     const modelClientParams = Object.assign(Object.assign({}, params.modelParams), { conn: { unix: path.join(activeFolder, "server-socket.sock") } });
     if (modelClientParams.fallbackStartServer !== undefined) {
         modelClientParams.fallbackStartServer = Object.assign(Object.assign({}, modelClientParams.fallbackStartServer));
     }
     const modelClient = await ModelClient.create(modelClientParams);
-    const vectorIndexParams: IndexConfig = Object.assign(
-        Object.assign({ dimensions: embeddingModelInfo.meta.n_embd, metric: "ip" as MetricKind }, params.vectorIndexParams),
-        { quantization: params.vectorIndexParams.quantization as ScalarKind }
-    );
-    const vectorIndex = new Index(vectorIndexParams);
-    const vectorIndexFile = path.join(activeFolder, "vector-index.usearch");
-    const vectorIndexMetaFile = path.join(activeFolder, "vector-index.meta.json");
-    if (await fs.exists(vectorIndexMetaFile)) {
-        const vectorIndexMeta = z.object({
-            metric: z.literal("ip"),
-            quantization: z.enum(["f64", "f32", "bf16", "f16", "e5m2", "e4m3", "e3m2", "e2m3", "i8", "u8", "b1"]),
-            connectivity: z.int().positive(),
-            expansion_add: z.int().positive(),
-            expansion_search: z.int().positive(),
-            multi: z.boolean(),
-        }).parse(await fs.readJson(vectorIndexMetaFile, { encoding: "utf-8" }));
-        if (await fs.exists(vectorIndexFile)) {
-            if (JSON.stringify(vectorIndexMeta) !== JSON.stringify(vectorIndexParams)) {
-                await fs.unlink(vectorIndexMetaFile);
-                await fs.unlink(vectorIndexFile);
-                await fs.writeJson(vectorIndexMetaFile, vectorIndexParams, { encoding: "utf-8" });
-                vectorIndex.save(vectorIndexFile);
-            }
-        } else {
-            vectorIndex.save(vectorIndexFile);
-        }
-    } else {
-        if (await fs.exists(vectorIndexFile)) {
-            await fs.unlink(vectorIndexFile);
-        }
-        await fs.writeJson(vectorIndexMetaFile, vectorIndexParams, { encoding: "utf-8" });
-        vectorIndex.save(vectorIndexFile);
-    }
-    vectorIndex.load(vectorIndexFile);
-    const memory = await MemoDB.load(path.join(activeFolder, "memo"));
-    const memoryIdsFile = path.join(activeFolder, "memory-ids.json")
-    let memoryIds: Record<string, string>;
-    if (await fs.exists(memoryIdsFile)) {
-        memoryIds = z.record(z.string(), z.string()).parse(await fs.readJson(memoryIdsFile, { encoding: "utf-8" }));
-    } else {
-        memoryIds = {};
-        await fs.writeJSON(memoryIdsFile, {}, { encoding: "utf-8" });
-    }
-    const vectorNormalizer = new VectorNormalizerLib(path.join(path.dirname(import.meta.dirname), "binaries", "utils", "libvector-normalizer.so"));
+    const rules = new DocumentDB<AgentRule, "utf8">({
+        embedder,
+        vectorNormalizer,
+        mainFolder: path.join(activeFolder, "memo/rules"),
+        vectorIndexConfig: params.memo.rules.vectorIndexConfig,
+        vectorIndexThreads: params.memo.rules.vectorIndexThreads,
+        fileExtension: ".md",
+        fileEncoding: "utf8",
+        serialize: data => data.content,
+        deserialize: text => ({ content: text, vectorKeys: [] }),
+    });
+    const facts = new DocumentDB<AgentFact, "utf8">({
+        embedder,
+        vectorNormalizer,
+        mainFolder: path.join(activeFolder, "memo/rules"),
+        vectorIndexConfig: params.memo.facts.vectorIndexConfig,
+        vectorIndexThreads: params.memo.rules.vectorIndexThreads,
+        fileExtension: ".md",
+        fileEncoding: "utf8",
+        serialize: data => data.content,
+        deserialize: text => ({ content: text, vectorKeys: [] }),
+    });
     const rp = (name: string) => fs.readFile(path.join(activeFolder, "patterns", name), { encoding: "utf-8" });
     const app = new Agent({
         activeFolder,
         modelClient,
         embedder,
-        vectorIndexFile,
-        vectorIndex,
-        memory,
-        memoryIdsFile,
-        memoryIds,
         rng: new Yurandom(params.randomSeed ?? `${process.pid}_${Date.now()}`),
         vectorNormalizer,
         samplers: params.samplers,
@@ -848,14 +740,25 @@ export async function main(params?: MainParams) {
                 recallResultRuleEntry: await rp("recall-result-rule.md"),
                 recallResultTaskEntry: await rp("recall-result-task.md"),
                 dialogue: await rp(`dialogue.md`),
-                dialogueMessage: await rp(`dialogue-message.md`),
+                dialogueMessageUser: await rp(`dialogue-message-user.md`),
+                dialogueMessageSystem: await rp(`dialogue-message-system.md`),
+                dialogueMessageAssistant: await rp(`dialogue-message-assistant.md`),
+                dialogueMessageTool: await rp(`dialogue-message-tool.md`),
             },
             grammar: Object.fromEntries(await Promise.all(
-                (await fs.readdir(path.join(activeFolder, "grammar")))
-                    .map(name => path.join(activeFolder, "grammar", name))
-                    .map(file => fs.readFile(file, { encoding: "utf-8" }).then(content => [file, content] as [string, string]))
+                (await getFileTree(path.join(activeFolder, "grammar"))).map(
+                    file => fs.readFile(file, { encoding: "utf-8" }).then(content => {
+                        let name = file.slice(path.join(activeFolder, "grammar").length);
+                        if (name.startsWith(path.sep)) {
+                            name = name.slice(1);
+                        }
+                        return [name, content] as [string, string];
+                    })
+                )
             )),
         }),
+        facts,
+        rules,
         toolParams: params.toolParams,
         numbers: params.numbers,
     });

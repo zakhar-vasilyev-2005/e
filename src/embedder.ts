@@ -11,6 +11,7 @@ export interface EmbedderConnectParams {
     host?: string | undefined,
     port: number,
     timeout?: number | undefined,
+    modelName?: string,
 };
 export interface EmbedderStartParams {
     llamaServerExecPath: string,
@@ -67,7 +68,15 @@ export class Embedder {
                     }
                     const result = await response.json();
                     if (typeof result === "object" && result !== null && "status" in result && result["status"] === "ok") {
-                        resolve(new Embedder(port, host));
+                        const info = (await getModels(port, host)).find(e => e.id === params.modelName || params.modelName === undefined);
+                        if (info === undefined) {
+                            if (params.modelName === undefined) {
+                                throw new Error(`no models found on ${host}:${port}`);
+                            } else {
+                                throw new Error(`cannot find model ${JSON.stringify(params.modelName)} on ${host}:${port}`);
+                            }
+                        }
+                        resolve(new Embedder(port, host, info));
                     } else {
                         throw new Error(`bad response from server: 'GET ${response.url}' returned ${JSON.stringify(result)}`);
                     }
@@ -92,7 +101,11 @@ export class Embedder {
             }
         }
     }
-    public constructor(public readonly port: number, public readonly host: string = "localhost") { }
+    public constructor(
+        public readonly port: number,
+        public readonly host: string,
+        public readonly modelInfo: ModelInfo
+    ) { }
     public async embedding(text: string) {
         return (await this.embeddingBatched([text] as [string]))[0];
     }
@@ -103,7 +116,7 @@ export class Embedder {
         if (input.some(e => e.length === 0)) {
             throw new Error(`cannot get embedding from an empty string`);
         }
-        const body = { input, model: "any" };
+        const body = { input, model: this.modelInfo.id };
         const raw = await (await getResponse({ port: this.port, host: this.host }, "/embeddings", body, "POST")).json();
         const result = z.array(z.object({ index: z.number(), embedding: z.array(z.array(z.number())) })).parse(raw);
         if (result.length !== input.length) {
@@ -129,7 +142,7 @@ export async function getResponse(conn: { port: number, host?: string }, endpoin
         throw e;
     }
 }
-export const GetModelEntrySchema = z.object({
+export const ModelInfoSchema = z.object({
     id: z.string(),
     aliases: z.array(z.string()),
     tags: z.array(z.string()),
@@ -143,10 +156,10 @@ export const GetModelEntrySchema = z.object({
         size: z.int().nonnegative(),
     }),
 });
-export type GetModelEntry = z.output<typeof GetModelEntrySchema>;
+export type ModelInfo = z.output<typeof ModelInfoSchema>;
 export async function getModels(port: number, host: string = "localhost") {
     const raw = await (await getResponse({ port, host }, "/models", undefined, "GET")).json();
-    return z.object({ data: z.array(GetModelEntrySchema) }).parse(raw).data;
+    return z.object({ data: z.array(ModelInfoSchema) }).parse(raw).data;
 }
 
 
