@@ -53,13 +53,49 @@
       "askEnum": 10,
       "askRelevantMemories": 10
     },
-    "autoRecallQueryLength": 1200,
-    "minimalRecallQueryLength": 200,
-    "recallMaxMemories": 5,
-    "recallMinDistance": 0.95,
-    "recallSelectorMaxTokens": 60,
-    "recallTriggerEntropy": 6,
-    "stepTokensMax": 1000
+    "askMaxTokens": {
+      "askRaw": 500,
+      "askEnum": 500,
+      "askRelevantMemories": 500
+    },
+    "stepTokensMax": 1000,
+    "recall": {
+      "facts": {
+        "maxOutput": 5,
+        "minDistance": 0.95,
+        "minSimilarity": 0
+      },
+      "rules": {
+        "maxOutput": 5,
+        "minDistance": 0.95,
+        "minSimilarity": 0
+      },
+      "maxOutputTotal": 5,
+      "minDistance": 0.95,
+      "minSimilarity": 0,
+      "recallSelectorMaxTokens": 1000
+    },
+    "firstRecall": {
+      "facts": {
+        "maxOutput": 10,
+        "minDistance": 0.95,
+        "minSimilarity": 0
+      },
+      "rules": {
+        "maxOutput": 10,
+        "minDistance": 0.95,
+        "minSimilarity": 0
+      },
+      "maxOutputTotal": 10,
+      "minDistance": 0.95,
+      "minSimilarity": 0,
+      "recallSelectorMaxTokens": 1000
+    },
+    "autoRecall": {
+      "autoRecallQueryLength": 1500,
+      "minimalQueryLength": 400,
+      "triggerEntropy": 6
+    }
   },
   "strings": {
     "tags": {
@@ -159,8 +195,7 @@
         "multi": false,
         "quantization": "f32"
       },
-      "vectorIndexThreads": 4,
-      "minDistance": 0.85
+      "vectorIndexThreads": 8
     },
     "facts": {
       "vectorIndexConfig": {
@@ -170,8 +205,17 @@
         "multi": false,
         "quantization": "f32"
       },
-      "vectorIndexThreads": 4,
-      "minDistance": 0.95
+      "vectorIndexThreads": 8
+    },
+    "tasks": {
+      "vectorIndexConfig": {
+        "connectivity": 32,
+        "expansion_add": 256,
+        "expansion_search": 128,
+        "multi": false,
+        "quantization": "f32"
+      },
+      "vectorIndexThreads": 8
     }
   }
 }

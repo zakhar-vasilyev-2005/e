@@ -19,8 +19,6 @@ export interface BaseDB<Payload extends Serializable> {
     add(name: string, content: Payload, keys: VectorKeyConstructor[]): PromiseOrNot<StoredDocument<this, Payload>>,
     remove(name: string): PromiseOrNot<StoredDocument<this, Payload>>,
     update(name: string, content: Payload): PromiseOrNot<StoredDocument<this, Payload>>,
-    addKey(name: string, ...keys: VectorKeyConstructor[]): PromiseOrNot<StoredDocument<this, Payload>>,
-    removeKey(...keys: VectorKey<this, Payload>[]): PromiseOrNot<StoredDocument<this, Payload>>,
     find(query: string, maxResults: number): PromiseOrNot<FoundStoredDocument<this, Payload>[]>,
 };
 export type VectorKeyConstructor = {
@@ -55,6 +53,7 @@ export type FoundStoredDocument<DocumentDB extends BaseDB<Payload>, Payload exte
     vectorId: string,
     similarity: number,
     distance: number,
+    weight: number,
 };
 
 
@@ -93,6 +92,7 @@ export type DocumentDBParams<Payload extends Serializable, Encoding extends Buff
     fileEncoding: Encoding,
     serialize: (this: DocumentDB<Payload, Encoding>, data: DocumentData<DocumentDB<Payload, Encoding>, Payload>) => Encoding extends "binary" ? Uint8Array : string,
     deserialize: (this: DocumentDB<Payload, Encoding>, data: Encoding extends "binary" ? Buffer : string) => DocumentDataConstructor<Payload>,
+    validator: (this: DocumentDB<Payload, Encoding>, data: StoredDocument<DocumentDB<Payload, Encoding>, Payload>) => PromiseOrNot<{ valid: boolean, message?: string }>,
 };
 export const DocumentDBDefaultGlobals = {
     lastVectorId: "1",
@@ -124,12 +124,14 @@ export class DocumentDB<Payload extends Serializable, Encoding extends BufferEnc
     public readonly vectorNormalizer: VectorNormalizer;
     public readonly serializeDocument: DocumentDBParams<Payload, Encoding>["serialize"];
     public readonly deserializeDocument: DocumentDBParams<Payload, Encoding>["deserialize"];
+    public readonly validateDocument: DocumentDBParams<Payload, Encoding>["validator"];
     public constructor(params: DocumentDBParams<Payload, Encoding>) {
         this.folder = params.mainFolder;
         this.vectorIndexThreads = params.vectorIndexThreads;
         this.vectorIndexConfig = Object.freeze(Object.assign({ dimensions: params.embedder.modelInfo.meta.n_embd }, params.vectorIndexConfig));
         this.serializeDocument = params.serialize;
         this.deserializeDocument = params.deserialize;
+        this.validateDocument = params.validator;
         this.fileEncoding = params.fileEncoding;
         this.fileExtension = params.fileExtension;
         this.embedder = params.embedder;
@@ -137,11 +139,14 @@ export class DocumentDB<Payload extends Serializable, Encoding extends BufferEnc
         fs.ensureDirSync(this.folder);
         this.vectorIndexFile = path.join(this.folder, "vector-index.usearch");
         this.vectorIndexConfigFile = path.join(this.folder, "vector-index-config.json");
-        if (fs.existsSync(this.vectorIndexFile) && !fs.existsSync(this.vectorIndexConfigFile)) {
-            fs.unlinkSync(this.vectorIndexFile);
-        }
-        if (fs.existsSync(this.vectorIndexConfigFile) && !fs.existsSync(this.vectorIndexFile)) {
-            fs.unlinkSync(this.vectorIndexConfigFile);
+        this.fileIndexDatabaseFile = path.join(this.folder, "file-index.sqlite3");
+        const exists = {
+            [this.vectorIndexFile]: fs.existsSync(this.vectorIndexFile),
+            [this.vectorIndexConfigFile]: fs.existsSync(this.vectorIndexConfigFile),
+            [this.fileIndexDatabaseFile]: fs.existsSync(this.fileIndexDatabaseFile),
+        };
+        if (Object.values(exists).some(e => (!!e) === false)) {
+            Object.keys(exists).filter(e => exists[e]).forEach(e => fs.unlinkSync(e));
         }
         if (fs.existsSync(this.vectorIndexFile)) {
             const prevConfig = fs.readJsonSync(this.vectorIndexConfigFile, { encoding: "utf8" });
@@ -160,7 +165,6 @@ export class DocumentDB<Payload extends Serializable, Encoding extends BufferEnc
             this.vectorIndex.save(this.vectorIndexFile);
             fs.writeJsonSync(this.vectorIndexConfigFile, this.vectorIndexConfig);
         }
-        this.fileIndexDatabaseFile = path.join(this.folder, "file-index.sqlite3");
         this.fileIndexDatabase = new sqlite3.default(this.fileIndexDatabaseFile, { fileMustExist: false });
         this.fileIndexDatabase.exec(`
             CREATE TABLE IF NOT EXISTS vectorKeys (
@@ -174,23 +178,23 @@ export class DocumentDB<Payload extends Serializable, Encoding extends BufferEnc
                 entryValue TEXT NOT NULL
             );
         `);
-        const p = this.fileIndexDatabase.prepare;
+        const db = this.fileIndexDatabase;
         this.fileIndexQueries = {
-            findKeys: p(`SELECT * FROM vectorKeys WHERE documentName = ?`),
-            getKey: p(`SELECT * FROM vectorKeys WHERE vectorId = ?`),
-            addKey: p(`INSERT INTO vectorKeys (vectorId,keyText,keyWeight,documentName) VALUES (? ? ? ?)`),
-            removeKey: p(`DELETE FROM vectorKeys WHERE vectorId = ?`),
-            getGlobal: p(`SELECT * FROM globalData WHERE entryName = ?`),
-            setGlobal: p(`UPDATE globalData SET entryValue = ? WHERE entryName = ?`),
+            findKeys: db.prepare(`SELECT * FROM vectorKeys WHERE documentName = ?`),
+            getKey: db.prepare(`SELECT * FROM vectorKeys WHERE vectorId = ?`),
+            addKey: db.prepare(`INSERT INTO vectorKeys (vectorId,keyText,keyWeight,documentName) VALUES (?, ?, ?, ?)`),
+            removeKey: db.prepare(`DELETE FROM vectorKeys WHERE vectorId = ?`),
+            getGlobal: db.prepare(`SELECT * FROM globalData WHERE entryName = ?`),
+            setGlobal: db.prepare(`UPDATE globalData SET entryValue = ? WHERE entryName = ?`),
         };
-        const presentGlobals = p<[], { entryName: string, entryValue: string }>(`SELECT * FROM globalData`).all().map(e => e.entryName);
+        const presentGlobals = db.prepare<[], { entryName: string, entryValue: string }>(`SELECT * FROM globalData`).all().map(e => e.entryName);
         for (const name in DocumentDBDefaultGlobals) {
             const value = (DocumentDBDefaultGlobals as Record<string, unknown>)[name];
             if (typeof value !== "string") {
                 throw new Error(`non-string value in DocumentDBDefaultGlobals[${JSON.stringify(name)}]`);
             }
             if (!presentGlobals.some(e => e === name)) {
-                p<[string, string]>(`INSERT INTO globalData (entryName, entryValue) VALUES (? ?)`).run(name, value);
+                db.prepare<[string, string]>(`INSERT INTO globalData (entryName, entryValue) VALUES (?, ?)`).run(name, value);
             }
         }
     }
@@ -220,12 +224,42 @@ export class DocumentDB<Payload extends Serializable, Encoding extends BufferEnc
         }
         const data: DocumentData<this, Payload> = { db: this, content, vectorKeys: [] };
         await fs.writeFile(file, this.serializeDocument(data), { encoding: this.fileEncoding });
-        await this.addKey(name, ...keys);
-        return await this.get(name, true);
+        if (keys.length !== 0) {
+            const embeddings = (await this.embedder.embeddingBatched(keys.map(e => e.text))).map((e, i) => this.vectorNormalizer.normalize(e, keys[i]?.weight ?? 1));
+            const lastVectorId = this.fileIndexQueries.getGlobal.get("lastVectorId")?.entryValue;
+            if (lastVectorId === undefined) {
+                throw new Error(`cannot find lastVectorId in globals of DocumentDB on folder ${JSON.stringify(this.folder)}`);
+            }
+            const startId = BigInt(lastVectorId) + 1n;
+            const embeddingIds = embeddings.map((e, i) => startId + BigInt(i));
+            this.vectorIndex.add(embeddingIds, embeddings);
+            keys.forEach((key, i) => {
+                const vectorId = embeddingIds[i] !== undefined ? String(embeddingIds[i]) : undefined;
+                if (vectorId === undefined) {
+                    throw new Error(`troubles in getting correct vector id`);
+                }
+                this.fileIndexQueries.addKey.run(vectorId, key.text, key.weight, name);
+            });
+            this.fileIndexQueries.setGlobal.run(String(embeddingIds.at(-1)), "lastVectorId");
+        }
+        const document = await this.get(name, true);
+        const { valid, message } = await this.validateDocument(document);
+        if (!valid) {
+            await this.remove(name);
+            throw Object.assign(new Error(`cannot add document: ${message ?? "document not valid"}`), {
+                error: "VALIDATION_ERROR",
+                document,
+                validationMessage: message
+            });
+        }
+        return document;
     }
     public async remove(name: string): Promise<StoredDocument<this, Payload>> {
         const document = await this.get(name, true);
-        await this.removeKey(...document.data.vectorKeys);
+        for (const { vectorId } of document.data.vectorKeys) {
+            this.fileIndexQueries.removeKey.run(vectorId);
+        }
+        this.vectorIndex.remove(document.data.vectorKeys.map(e => BigInt(e.vectorId)));
         await fs.unlink(path.join(this.folder, name, this.fileExtension));
         return document;
     }
@@ -233,31 +267,6 @@ export class DocumentDB<Payload extends Serializable, Encoding extends BufferEnc
         const document = await this.get(name, true);
         await this.remove(name);
         return await this.add(name, content, document.data.vectorKeys.map(e => ({ text: e.keyText, weight: e.weight })));
-    }
-    public async addKey(name: string, ...keys: VectorKeyConstructor[]): Promise<StoredDocument<this, Payload>> {
-        const embeddings = (await this.embedder.embeddingBatched(keys.map(e => e.text))).map((e, i) => this.vectorNormalizer.normalize(e, keys[i]?.weight ?? 1));
-        const lastVectorId = this.fileIndexQueries.getGlobal.get("lastVectorId")?.entryValue;
-        if (lastVectorId === undefined) {
-            throw new Error(`cannot find lastVectorId in globals of DocumentDB on folder ${JSON.stringify(this.folder)}`);
-        }
-        const startId = BigInt(lastVectorId) + 1n;
-        const embeddingIds = embeddings.map((e, i) => startId + BigInt(i));
-        this.vectorIndex.add(embeddingIds, embeddings);
-        keys.forEach((key, i) => {
-            const vectorId = embeddingIds[i] !== undefined ? String(embeddingIds[i]) : undefined;
-            if (vectorId === undefined) {
-                throw new Error(`troubles in getting correct vector id`);
-            }
-            this.fileIndexQueries.addKey.run(vectorId, key.text, key.weight, name);
-        });
-        return await this.get(name, true);
-    }
-    public async removeKey(...keys: VectorKeySelector[]): Promise<StoredDocument<this, Payload>> {
-        for (const { vectorId } of keys) {
-            this.fileIndexQueries.removeKey.run(vectorId);
-        }
-        this.vectorIndex.remove(keys.map(e => BigInt(e.vectorId)));
-        throw new Error("Method not implemented.");
     }
     public async find(query: string, maxResults: number): Promise<FoundStoredDocument<this, Payload>[]> {
         const embedding = this.vectorNormalizer.normalize(await this.embedder.embedding(query));
@@ -279,6 +288,7 @@ export class DocumentDB<Payload extends Serializable, Encoding extends BufferEnc
                 vectorId: key.vectorId,
                 similarity: distance / key.keyWeight,
                 distance,
+                weight: key.keyWeight,
             });
         }
         return result;
