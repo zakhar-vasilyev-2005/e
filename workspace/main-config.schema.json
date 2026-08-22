@@ -72,6 +72,39 @@
         "modelParams": {
             "type": "object",
             "properties": {
+                "conn": {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "unix": {
+                                    "type": "string"
+                                }
+                            },
+                            "required": [
+                                "unix"
+                            ],
+                            "additionalProperties": false
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "host": {
+                                    "type": "string"
+                                },
+                                "port": {
+                                    "type": "integer",
+                                    "minimum": 1024,
+                                    "maximum": 65535
+                                }
+                            },
+                            "required": [
+                                "port"
+                            ],
+                            "additionalProperties": false
+                        }
+                    ]
+                },
                 "timeout": {
                     "type": "number",
                     "minimum": 0
@@ -167,6 +200,7 @@
                 }
             },
             "required": [
+                "conn",
                 "timeout"
             ],
             "additionalProperties": false
@@ -1157,19 +1191,19 @@
                     "properties": {
                         "tool_call": {
                             "type": "string",
-                            "pattern": "^[a-zA-Z_0-9]+$"
+                            "pattern": "^[:a-zA-Z_0-9-]+$"
                         },
                         "askRelevantMemories": {
                             "type": "string",
-                            "pattern": "^[a-zA-Z_0-9]+$"
+                            "pattern": "^[:a-zA-Z_0-9-]+$"
                         },
                         "ask_raw": {
                             "type": "string",
-                            "pattern": "^[a-zA-Z_0-9]+$"
+                            "pattern": "^[:a-zA-Z_0-9-]+$"
                         },
                         "ask_enum": {
                             "type": "string",
-                            "pattern": "^[a-zA-Z_0-9]+$"
+                            "pattern": "^[:a-zA-Z_0-9-]+$"
                         }
                     },
                     "required": [
@@ -1203,6 +1237,16 @@
                 "stepTokensMax": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                },
+                "minStepTokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                },
+                "minStepSymbols": {
+                    "type": "integer",
+                    "minimum": 0,
                     "maximum": 9007199254740991
                 },
                 "askMaxIterations": {
@@ -1283,7 +1327,7 @@
                                 },
                                 "maxOutput": {
                                     "type": "integer",
-                                    "exclusiveMinimum": 0,
+                                    "minimum": 0,
                                     "maximum": 9007199254740991
                                 }
                             },
@@ -1308,7 +1352,32 @@
                                 },
                                 "maxOutput": {
                                     "type": "integer",
-                                    "exclusiveMinimum": 0,
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                }
+                            },
+                            "required": [
+                                "minDistance",
+                                "minSimilarity",
+                                "maxOutput"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "tasks": {
+                            "type": "object",
+                            "properties": {
+                                "minDistance": {
+                                    "type": "number",
+                                    "minimum": 0
+                                },
+                                "minSimilarity": {
+                                    "type": "number",
+                                    "minimum": 0,
+                                    "maximum": 1
+                                },
+                                "maxOutput": {
+                                    "type": "integer",
+                                    "minimum": 0,
                                     "maximum": 9007199254740991
                                 }
                             },
@@ -1335,6 +1404,7 @@
                         "minSimilarity",
                         "rules",
                         "facts",
+                        "tasks",
                         "maxOutputTotal",
                         "recallSelectorMaxTokens"
                     ],
@@ -1366,7 +1436,7 @@
                                 },
                                 "maxOutput": {
                                     "type": "integer",
-                                    "exclusiveMinimum": 0,
+                                    "minimum": 0,
                                     "maximum": 9007199254740991
                                 }
                             },
@@ -1391,7 +1461,32 @@
                                 },
                                 "maxOutput": {
                                     "type": "integer",
-                                    "exclusiveMinimum": 0,
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                }
+                            },
+                            "required": [
+                                "minDistance",
+                                "minSimilarity",
+                                "maxOutput"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "tasks": {
+                            "type": "object",
+                            "properties": {
+                                "minDistance": {
+                                    "type": "number",
+                                    "minimum": 0
+                                },
+                                "minSimilarity": {
+                                    "type": "number",
+                                    "minimum": 0,
+                                    "maximum": 1
+                                },
+                                "maxOutput": {
+                                    "type": "integer",
+                                    "minimum": 0,
                                     "maximum": 9007199254740991
                                 }
                             },
@@ -1418,6 +1513,7 @@
                         "minSimilarity",
                         "rules",
                         "facts",
+                        "tasks",
                         "maxOutputTotal",
                         "recallSelectorMaxTokens"
                     ],
@@ -1447,6 +1543,8 @@
             },
             "required": [
                 "stepTokensMax",
+                "minStepTokens",
+                "minStepSymbols",
                 "askMaxIterations",
                 "askMaxTokens",
                 "recall",
@@ -4701,6 +4799,484 @@
                 "tasks"
             ],
             "additionalProperties": false
+        },
+        "qemu": {
+            "type": "object",
+            "properties": {
+                "createParams": {
+                    "type": "object",
+                    "properties": {
+                        "connect": {
+                            "type": "object",
+                            "properties": {
+                                "qmp": {
+                                    "anyOf": [
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "unix": {
+                                                    "type": "string"
+                                                },
+                                                "timeout": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 9007199254740991
+                                                },
+                                                "interval": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 9007199254740991
+                                                }
+                                            },
+                                            "required": [
+                                                "unix"
+                                            ],
+                                            "additionalProperties": false
+                                        },
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "host": {
+                                                    "type": "string"
+                                                },
+                                                "port": {
+                                                    "type": "integer",
+                                                    "minimum": 1024,
+                                                    "maximum": 65535
+                                                },
+                                                "timeout": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 9007199254740991
+                                                },
+                                                "interval": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 9007199254740991
+                                                }
+                                            },
+                                            "required": [
+                                                "port"
+                                            ],
+                                            "additionalProperties": false
+                                        }
+                                    ]
+                                },
+                                "ssh": {
+                                    "type": "object",
+                                    "properties": {
+                                        "host": {
+                                            "type": "string"
+                                        },
+                                        "port": {
+                                            "type": "integer",
+                                            "minimum": 1024,
+                                            "maximum": 65535
+                                        },
+                                        "username": {
+                                            "type": "string"
+                                        },
+                                        "password": {
+                                            "type": "string"
+                                        },
+                                        "timeout": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                        },
+                                        "interval": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                        }
+                                    },
+                                    "required": [
+                                        "port",
+                                        "username",
+                                        "password"
+                                    ],
+                                    "additionalProperties": false
+                                }
+                            },
+                            "required": [
+                                "qmp",
+                                "ssh"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "fallbackStart": {
+                            "type": "object",
+                            "properties": {
+                                "command": {
+                                    "type": "string"
+                                },
+                                "accel": {
+                                    "type": "string",
+                                    "enum": [
+                                        "kvm",
+                                        "xen",
+                                        "hvf",
+                                        "nvmm",
+                                        "whpx",
+                                        "tcg"
+                                    ]
+                                },
+                                "cpu": {
+                                    "type": "string"
+                                },
+                                "smp": {
+                                    "type": "object",
+                                    "properties": {
+                                        "cpus": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                        },
+                                        "maxcpus": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                        },
+                                        "sockets": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                        },
+                                        "dies": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                        },
+                                        "clusters": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                        },
+                                        "cores": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                        },
+                                        "threads": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                        }
+                                    },
+                                    "additionalProperties": false
+                                },
+                                "memory": {
+                                    "anyOf": [
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "size": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 9007199254740991
+                                                }
+                                            },
+                                            "required": [
+                                                "size"
+                                            ],
+                                            "additionalProperties": false
+                                        },
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "size": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 9007199254740991
+                                                },
+                                                "slots": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 9007199254740991
+                                                },
+                                                "maxmem": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 9007199254740991
+                                                }
+                                            },
+                                            "required": [
+                                                "size",
+                                                "slots",
+                                                "maxmem"
+                                            ],
+                                            "additionalProperties": false
+                                        }
+                                    ]
+                                },
+                                "disks": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "file": {
+                                                "type": "string"
+                                            },
+                                            "format": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "raw",
+                                                    "qcow2",
+                                                    "qcow",
+                                                    "qed",
+                                                    "vmdk",
+                                                    "vdi",
+                                                    "vpc",
+                                                    "vhd",
+                                                    "vhdx",
+                                                    "luks",
+                                                    "bochs",
+                                                    "cloop",
+                                                    "cow",
+                                                    "dmg"
+                                                ]
+                                            },
+                                            "snapshot": {
+                                                "type": "boolean"
+                                            },
+                                            "interface": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "ide",
+                                                    "scsi",
+                                                    "sd",
+                                                    "mtd",
+                                                    "floppy",
+                                                    "pflash",
+                                                    "virtio"
+                                                ]
+                                            },
+                                            "cache": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "none",
+                                                    "writeback",
+                                                    "unsafe",
+                                                    "directsync",
+                                                    "writethrough"
+                                                ]
+                                            },
+                                            "aio": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "threads",
+                                                    "native",
+                                                    "io_uring"
+                                                ]
+                                            }
+                                        },
+                                        "required": [
+                                            "file"
+                                        ],
+                                        "additionalProperties": false
+                                    }
+                                },
+                                "folders": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "path": {
+                                                "type": "string"
+                                            },
+                                            "mount_tag": {
+                                                "type": "string"
+                                            },
+                                            "security_model": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "passthrough",
+                                                    "mapped-xattr",
+                                                    "mapped-file",
+                                                    "none"
+                                                ]
+                                            },
+                                            "readonly": {
+                                                "type": "boolean"
+                                            }
+                                        },
+                                        "required": [
+                                            "path",
+                                            "mount_tag"
+                                        ],
+                                        "additionalProperties": false
+                                    }
+                                },
+                                "hostfwd": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "protocol": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "tcp",
+                                                    "udp"
+                                                ]
+                                            },
+                                            "hostaddr": {
+                                                "type": "string"
+                                            },
+                                            "hostport": {
+                                                "type": "integer",
+                                                "minimum": 1024,
+                                                "maximum": 65535
+                                            },
+                                            "guestaddr": {
+                                                "type": "string"
+                                            },
+                                            "guestport": {
+                                                "type": "integer",
+                                                "minimum": 1024,
+                                                "maximum": 65535
+                                            }
+                                        },
+                                        "required": [
+                                            "hostport",
+                                            "guestport"
+                                        ],
+                                        "additionalProperties": false
+                                    }
+                                },
+                                "network": {
+                                    "type": "boolean"
+                                },
+                                "graphics": {
+                                    "type": "string",
+                                    "enum": [
+                                        "hide",
+                                        "disable",
+                                        "enable"
+                                    ]
+                                },
+                                "qmp": {
+                                    "anyOf": [
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "unix": {
+                                                    "type": "string"
+                                                }
+                                            },
+                                            "required": [
+                                                "unix"
+                                            ],
+                                            "additionalProperties": false
+                                        },
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "host": {
+                                                    "type": "string"
+                                                },
+                                                "port": {
+                                                    "type": "integer",
+                                                    "minimum": 1024,
+                                                    "maximum": 65535
+                                                }
+                                            },
+                                            "required": [
+                                                "port"
+                                            ],
+                                            "additionalProperties": false
+                                        }
+                                    ]
+                                },
+                                "ssh": {
+                                    "type": "object",
+                                    "properties": {
+                                        "host": {
+                                            "type": "string"
+                                        },
+                                        "port": {
+                                            "type": "integer",
+                                            "minimum": 1024,
+                                            "maximum": 65535
+                                        }
+                                    },
+                                    "additionalProperties": false
+                                }
+                            },
+                            "required": [
+                                "disks",
+                                "qmp",
+                                "ssh"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "fallbackReconnect": {
+                            "type": "object",
+                            "properties": {
+                                "sshTimeout": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                },
+                                "sshInterval": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                },
+                                "qmpTimeout": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                },
+                                "qmpInterval": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "required": [
+                        "connect"
+                    ],
+                    "additionalProperties": false
+                },
+                "memoFolder": {
+                    "anyOf": [
+                        {
+                            "type": "null"
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "mount_tag": {
+                                    "type": "string",
+                                    "pattern": "^[a-zA-Z_0-9]+$"
+                                },
+                                "security_model": {
+                                    "type": "string",
+                                    "enum": [
+                                        "passthrough",
+                                        "mapped-xattr",
+                                        "mapped-file",
+                                        "none"
+                                    ]
+                                }
+                            },
+                            "required": [
+                                "mount_tag",
+                                "security_model"
+                            ],
+                            "additionalProperties": false
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "createParams",
+                "memoFolder"
+            ],
+            "additionalProperties": false
         }
     },
     "required": [
@@ -4712,7 +5288,8 @@
         "strings",
         "numbers",
         "toolParams",
-        "memo"
+        "memo",
+        "qemu"
     ],
     "additionalProperties": false
 }

@@ -1,0 +1,5 @@
+<ai:chat_history>
+<% for (const message of messages) { %><ai:message role="<%- message.role %>">
+<%- message.content %>
+</ai:message>
+<% } %></ai:chat_history>

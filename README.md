@@ -5,16 +5,13 @@ Something.
 
 ### Files
 Files in ./workspace:
-1. `main-config[any config extension, compatible with json/json5/ini/yaml/toml]` (required) -- main config.
-2. `system-prompt.md` (required) -- the only system prompt, used by agent.
-3. `memory-ids.json` (optional, creates on start) -- link between vector ids and filenames vector refers to.
-4. `server-socket.sock` (optional, creates on start) -- unix-socket of main inference server; independent with core agent script.
-5. `vector-index.meta.json` (optional, creates on start) -- saved params of vector index; if this is different with the params from `main-config`, then vector index recreates.
-6. `vector-index.usearch` (optional, creates on start) -- vector index, created from 'key' sections, obtained from `.memo.md` and `.rule.md` from ./workspaces/memo.
-7. `memo/**.fact.md` -- memories and facts.
-8. `memo/**.rule.md` -- rules and skills for agent.
-9. `memo/**.task.md` -- tasks of agent.
-
-
+1. `main-config.json` (or any other config extension, compatible with json/json5/ini/yaml/toml) (required) -- main config.
+2. `main-config.schema.json` (output) -- file, which creates at start and contains json-schema for `main-config`.
+3. `grammar/` -- a container for `.gbnf` files. All grammar entries are loaded from this folder.
+4. `memo/facts/`, `memo/rules/` and `memo/tasks/` -- a vectorized document storage for facts, rules and tasks for agent.
+5. `memo/*/file-index.sqlite3` -- information about vector keys stored in document storage. All vector keys (that are used in search process) are stored here.
+6. `memo/*/vector-index.usearch` -- vector index file for fast vector search. Contains vectors without additional information to them, but allows fast search.
+7. `memo/*/vector-index-config.json` -- config of created vector index. If this file differs with linked entry from `main-config`, then vector index is recreated.
+8. `patterns/` -- a set of jinja patterns used to make a prompt/other text input chunk for AI. Doesn't affect the model's chat template, but rather affects the input chunks, used to construct `messages` in model's chat template.
 
 

@@ -1,6 +1,7 @@
 {
   "$schema": "./main-config.schema.json",
   "embedderParams": {
+    "host": "localhost",
     "port": 39512,
     "timeout": 500,
     "fallbackStartServer": {
@@ -19,6 +20,9 @@
     }
   },
   "modelParams": {
+    "conn": {
+      "unix": "workspace/sockets/model.sock"
+    },
     "timeout": 500,
     "fallbackStartServer": {
       "modelFile": "/mnt/120gb/Users/Public/LLMs/Llama-3.2-1B-Instruct-IQ4_XS.gguf",
@@ -58,7 +62,6 @@
       "askEnum": 500,
       "askRelevantMemories": 500
     },
-    "stepTokensMax": 1000,
     "recall": {
       "facts": {
         "maxOutput": 5,
@@ -68,6 +71,11 @@
       "rules": {
         "maxOutput": 5,
         "minDistance": 0.95,
+        "minSimilarity": 0
+      },
+      "tasks": {
+        "maxOutput": 0,
+        "minDistance": 0,
         "minSimilarity": 0
       },
       "maxOutputTotal": 5,
@@ -86,6 +94,11 @@
         "minDistance": 0.95,
         "minSimilarity": 0
       },
+      "tasks": {
+        "maxOutput": 0,
+        "minDistance": 0,
+        "minSimilarity": 0
+      },
       "maxOutputTotal": 10,
       "minDistance": 0.95,
       "minSimilarity": 0,
@@ -95,7 +108,10 @@
       "autoRecallQueryLength": 1500,
       "minimalQueryLength": 400,
       "triggerEntropy": 6
-    }
+    },
+    "stepTokensMax": 1000,
+    "minStepSymbols": 0,
+    "minStepTokens": 10
   },
   "strings": {
     "tags": {
@@ -216,6 +232,67 @@
         "quantization": "f32"
       },
       "vectorIndexThreads": 8
+    }
+  },
+  "qemu": {
+    "createParams": {
+      "connect": {
+        "qmp": {
+          "unix": "workspace/sockets/qmp.sock",
+          "timeout": 100,
+          "interval": 500
+        },
+        "ssh": {
+          "host": "localhost",
+          "port": 44765,
+          "password": "password",
+          "username": "user",
+          "timeout": 100,
+          "interval": 500
+        }
+      },
+      "fallbackStart": {
+        "command": "qemu-system-x86_64",
+        "accel": "kvm",
+        "cpu": "host",
+        "memory": {
+          "size": 1024,
+          "maxmem": 4096,
+          "slots": 8
+        },
+        "smp": {
+          "cores": 2,
+          "threads": 2
+        },
+        "disks": [
+          {
+            "file": "",
+            "format": "qcow2",
+            "aio": "io_uring",
+            "cache": "writeback",
+            "interface": "virtio",
+            "snapshot": true
+          }
+        ],
+        "folders": [],
+        "graphics": "enable",
+        "network": true,
+        "qmp": {
+          "unix": "workspace/sockets/qmp.sock"
+        },
+        "ssh": {
+          "host": "localhost",
+          "port": 44765
+        }
+      },
+      "fallbackReconnect": {
+        "qmpTimeout": 10000,
+        "sshTimeout": 30000
+      }
+    },
+    "memoFolder": {
+      "mount_tag": "memo",
+      "security_model": "mapped-file"
     }
   }
 }

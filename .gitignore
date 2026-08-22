@@ -1,8 +1,7 @@
 binaries/
 node_modules/
 dist/
-workspace/memory-ids.json
-workspace/server-socket.sock
-workspace/vector-index.meta.json
-workspace/vector-index.usearch
-workspace/memo/temp/
+workspace/memo/*/file-index.sqlite3
+workspace/memo/*/vector-index.usearch
+workspace/memo/*/vector-index-config.json
+

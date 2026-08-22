@@ -6,6 +6,7 @@ import * as sqlite3 from 'better-sqlite3';
 import * as z from 'zod';
 import { type Embedder } from "./embedder.js";
 import type { VectorNormalizer } from "./vector-normalizer.js";
+import { getFileTree } from "./get-file-tree.js";
 
 
 
@@ -18,8 +19,9 @@ export interface BaseDB<Payload extends Serializable> {
     get(name: string, ensureExists?: boolean): PromiseOrNot<StoredDocument<this, Payload> | null>,
     add(name: string, content: Payload, keys: VectorKeyConstructor[]): PromiseOrNot<StoredDocument<this, Payload>>,
     remove(name: string): PromiseOrNot<StoredDocument<this, Payload>>,
-    update(name: string, content: Payload): PromiseOrNot<StoredDocument<this, Payload>>,
+    update(name: string, updates: { content?: Payload | undefined, keys?: VectorKeyConstructor[] | undefined }): PromiseOrNot<StoredDocument<this, Payload>>,
     find(query: string, maxResults: number): PromiseOrNot<FoundStoredDocument<this, Payload>[]>,
+    list(): PromiseOrNot<string[]>, // names of documents
 };
 export type VectorKeyConstructor = {
     weight: number,
@@ -208,13 +210,20 @@ export class DocumentDB<Payload extends Serializable, Encoding extends BufferEnc
             }
             return null;
         }
-        const data = this.deserializeDocument(await fs.readFile(file, { encoding: this.fileEncoding }) as any);
+        const content = await fs.readFile(file, { encoding: this.fileEncoding });
         const vectorKeys = this.fileIndexQueries.findKeys.all(name).map(e => ({
             db: this,
             keyText: e.keyText,
             weight: e.keyWeight,
             vectorId: e.vectorId
         } as VectorKey<this, Payload>));
+        let data: DocumentDataConstructor<Payload>;
+        try {
+            data = this.deserializeDocument(content as any);
+        } catch (e) {
+            await this.rawRemove(name, vectorKeys);
+            throw e;
+        }
         return { db: this, data: { db: this, vectorKeys, content: data.content }, name };
     }
     public async add(name: string, content: Payload, keys: VectorKeyConstructor[]): Promise<StoredDocument<this, Payload>> {
@@ -223,7 +232,6 @@ export class DocumentDB<Payload extends Serializable, Encoding extends BufferEnc
             throw new Error(`document ${JSON.stringify(name)} already exists in DocumentDB on folder ${JSON.stringify(this.folder)}`);
         }
         const data: DocumentData<this, Payload> = { db: this, content, vectorKeys: [] };
-        await fs.writeFile(file, this.serializeDocument(data), { encoding: this.fileEncoding });
         if (keys.length !== 0) {
             const embeddings = (await this.embedder.embeddingBatched(keys.map(e => e.text))).map((e, i) => this.vectorNormalizer.normalize(e, keys[i]?.weight ?? 1));
             const lastVectorId = this.fileIndexQueries.getGlobal.get("lastVectorId")?.entryValue;
@@ -239,9 +247,11 @@ export class DocumentDB<Payload extends Serializable, Encoding extends BufferEnc
                     throw new Error(`troubles in getting correct vector id`);
                 }
                 this.fileIndexQueries.addKey.run(vectorId, key.text, key.weight, name);
+                data.vectorKeys.push({ db: this, keyText: key.text, vectorId, weight: key.weight });
             });
             this.fileIndexQueries.setGlobal.run(String(embeddingIds.at(-1)), "lastVectorId");
         }
+        await fs.writeFile(file, this.serializeDocument(data), { encoding: this.fileEncoding });
         const document = await this.get(name, true);
         const { valid, message } = await this.validateDocument(document);
         if (!valid) {
@@ -254,21 +264,27 @@ export class DocumentDB<Payload extends Serializable, Encoding extends BufferEnc
         }
         return document;
     }
-    public async remove(name: string): Promise<StoredDocument<this, Payload>> {
-        const document = await this.get(name, true);
-        for (const { vectorId } of document.data.vectorKeys) {
+    public async rawRemove(name: string, vectorKeys: VectorKeySelector[]): Promise<void> {
+        for (const { vectorId } of vectorKeys) {
             this.fileIndexQueries.removeKey.run(vectorId);
         }
-        this.vectorIndex.remove(document.data.vectorKeys.map(e => BigInt(e.vectorId)));
-        await fs.unlink(path.join(this.folder, name, this.fileExtension));
+        this.vectorIndex.remove(vectorKeys.map(e => BigInt(e.vectorId)));
+        await fs.unlink(path.join(this.folder, name + this.fileExtension));
+    }
+    public async remove(name: string): Promise<StoredDocument<this, Payload>> {
+        const document = await this.get(name, true);
+        await this.rawRemove(name, document.data.vectorKeys);
         return document;
     }
-    public async update(name: string, content: Payload): Promise<StoredDocument<this, Payload>> {
+    public async update(name: string, updates: { content?: Payload | undefined, keys?: VectorKeyConstructor[] | undefined }): Promise<StoredDocument<this, Payload>> {
         const document = await this.get(name, true);
         await this.remove(name);
-        return await this.add(name, content, document.data.vectorKeys.map(e => ({ text: e.keyText, weight: e.weight })));
+        const keys = updates.keys ?? document.data.vectorKeys.map(e => ({ text: e.keyText, weight: e.weight }));
+        const content = updates.content ?? document.data.content;
+        return await this.add(name, content, keys);
     }
     public async find(query: string, maxResults: number): Promise<FoundStoredDocument<this, Payload>[]> {
+        if (maxResults <= 0) { return []; }
         const embedding = this.vectorNormalizer.normalize(await this.embedder.embedding(query));
         const { keys: vectorKeyIds, distances } = this.vectorIndex.search(embedding, maxResults, this.vectorIndexThreads);
         const documents = [...vectorKeyIds].map((keyId, i) => ({
@@ -292,6 +308,13 @@ export class DocumentDB<Payload extends Serializable, Encoding extends BufferEnc
             });
         }
         return result;
+    }
+    public async list(): Promise<string[]> {
+        const tree = await getFileTree(this.folder);
+        return tree.map(file => {
+            const name = file.slice(this.folder.length);
+            return name.startsWith(path.sep) ? name.slice(1) : name;
+        }).filter(e => e.endsWith(this.fileExtension)).map(e => e.slice(0, -this.fileExtension.length));
     }
 }
 
