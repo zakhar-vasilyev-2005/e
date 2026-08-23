@@ -476,9 +476,18 @@ export class Agent extends EventEmitter<AgentEvents> {
                     line.push(`<${agent.strings.tags.tool_call}`);
                     continue;
                 }
-                await agent.tryToolCall({ line, history, currentRole: "assistant", toolCallOpenTag: openTag });
+                const { toolCall } = await agent.tryToolCall({ line, history, currentRole: "assistant", toolCallOpenTag: openTag });
+                if (toolCall.name === "task_done") {
+                    taskSuccess = true;
+                    break;
+                }
                 continue;
-                // somehow test to break loop
+                // mb task_done tool is not the best option to stop the task. there is an option to make <status>done</status>, but it's also not the best.
+                // TODO: make 'ask' questions when EOG without toolCall
+                // mb we need to align model to make EOGs instead of tool calls and then manually add toolcalls and hide the call process from ai? giving only results? w questions of course.
+                // yup.
+                // TODO: remake tool call
+                // TODO: make patterns and grammar
             }
             // TODO: make loop of steps
             // TODO: make history compression
@@ -711,10 +720,12 @@ export class Agent extends EventEmitter<AgentEvents> {
         await params.line.push(pre.assistantToUser);
         const text = bodyStep.tokens.filter(e => !e.special).map(e => e.piece).join("");
         delete attrs["name"];
-        const result = await this.toolCall({ name: tool.name, attrs, text });
+        const toolCall = { name: tool.name, attrs, text } as ToolCallParams<ToolName>;
+        const result = await this.toolCall(toolCall);
         const textResult = await this.formatToolCallResult(result);
         params.history.add("user", textResult);
         await params.line.step(pre.assistantToUser, textResult, pre.userToAssistant);
+        return { toolCall, toolResult: result };
     }
     public async toolCall<T extends ToolName>(params: ToolCallParams<T>): Promise<ToolResult & { toolName: T }> {
         const toolName = params.name as ToolName;

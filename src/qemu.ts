@@ -483,7 +483,14 @@ export class Qemu {
                     const message = comment.length === 0 ? params.errorMessage : `${params.errorMessage}: ${comment}`;
                     reject(Object.assign(new Error(message), { stdout, stderr, returncode: returnCode }));
                 } else {
-                    resolve(await params.cb({ stdout, stderr, outputChunks, hasTimeout, returnCode }));
+                    let result: R;
+                    try {
+                        result = await params.cb({ stdout, stderr, outputChunks: outputChunks.filter(e => e.piece.length !== 0), hasTimeout, returnCode });
+                    } catch (e) {
+                        reject(e);
+                        return;
+                    }
+                    resolve(result);
                 }
             });
             const commands = {
@@ -491,7 +498,7 @@ export class Qemu {
                 then: `echo -n "${markers.ok}-$?-${markers.end}"`,
                 else_: `echo -n "${markers.error}-$?-${markers.end}"`,
             }
-            stream.write(`${commands.main} && ${commands.then} || ${commands.else_}`);
+            stream.write(`( ${commands.main} ) && ${commands.then} || ${commands.else_}`);
         }));
     }
     public async writeFile(file: string, content: Buffer | string, options: RwBaseOptions & { encoding?: BufferEncoding | undefined }) {
@@ -501,7 +508,11 @@ export class Qemu {
             timeout: options.timeout,
             command: `base64 -d <<< ${shellescape([bytes.toString("base64")])} > ${shellescape([file])}`,
             errorMessage: `cannot write file ${JSON.stringify(file)} with ${bytes.byteLength} bytes`,
-            cb: () => { },
+            cb: ({ hasTimeout }) => {
+                if (hasTimeout) {
+                    throw Object.assign(new Error(`timeout while writing file ${JSON.stringify(file)}`), { type: "TIMEOUT", timeout: options.timeout, file });
+                }
+            },
         });
     }
     public async readFile(file: string, options: RwBaseOptions & { encoding?: undefined }): Promise<Buffer>;
@@ -512,7 +523,10 @@ export class Qemu {
             timeout: options.timeout,
             command: `base64 ${shellescape([file])}`,
             errorMessage: `cannot read file ${JSON.stringify(file)}`,
-            cb({ stdout }) {
+            cb({ stdout, hasTimeout }) {
+                if (hasTimeout) {
+                    throw Object.assign(new Error(`timeout while reading file ${JSON.stringify(file)}`), { type: "TIMEOUT", timeout: options.timeout, file });
+                }
                 const content = Buffer.from(stdout, "base64");
                 return options.encoding === undefined ? content : content.toString(options.encoding);
             },
@@ -537,15 +551,23 @@ export class Qemu {
         tmpNamePrefix: string,
         tmpNameSuffix: string,
     }>) {
+        const startTime = Date.now();
         const template = `${options.tmpNamePrefix ?? "tmp"}-XXXXXXXXXX-`;
         const file = await this.rwTemplate({
             sudoPassword: options.sudoPassword,
+            timeout: options.timeout,
             command: shellescape(["mktemp", ...(options.tmpNameSuffix === undefined ? [] : ["--suffix", options.tmpNameSuffix]), template]),
             errorMessage: `cannot create temp file`,
-            cb({ stdout }) {
+            cb({ stdout, hasTimeout }) {
+                if (hasTimeout) {
+                    throw Object.assign(new Error(`timeout while creating temporary file`), { type: "TIMEOUT", timeout: options.timeout });
+                }
                 return stdout.trim();
             },
         });
+        if (options.timeout !== undefined) {
+            options = Object.assign(Object.assign({}, options), { timeout: options.timeout - (Date.now() - startTime) })
+        }
         await this.writeFile(file, content, options);
         return file;
     }
