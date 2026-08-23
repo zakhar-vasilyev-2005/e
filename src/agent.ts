@@ -491,7 +491,7 @@ export class Agent extends EventEmitter<AgentEvents> {
             }
             // TODO: make loop of steps
             // TODO: make history compression
-            // TODO: make task status changing\
+            // TODO: make task status changing
 
         } finally {
             await agent.tasks.update(taskDocument.name, {
