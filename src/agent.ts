@@ -9,16 +9,16 @@ import { History, type Message } from './history.js';
 import type { MainParams, ToolParams } from './index.js';
 import matter from 'gray-matter';
 import * as z from 'zod';
-import { MarkdownParser } from 'md2ast';
+import { MarkdownParser, type Heading as MdHeading } from 'md2ast';
 import { Qemu } from './qemu.js';
 import { Stream } from 'stream';
-import path from 'path';
 import shellescape from 'shell-escape';
 
 
 type PromiseOrNot<T> = T | Promise<T>;
 
 
+export type MemoType = "rule" | "task" | "fact";
 export type AgentFact = {
     type: "fact",
     briefly: string,
@@ -133,8 +133,6 @@ export type ToolResultBash = {
 export type ToolResultPython = {
     toolName: "python",
     outputChunks: { type: "stdout" | "stderr", piece: string }[],
-    returnCode: null | number,
-    exitSignal: string | undefined,
     hasTimeout: boolean,
 };
 export type ToolResultWriteFile = {
@@ -147,6 +145,7 @@ export type ToolResultReadFile = {
 export type ToolResultSplitTask = {
     toolName: "split_task",
     error?: string,
+    tasksCreated: AgentTaskLoaded[],
 };
 export type ToolResultTaskDone = {
     toolName: "task_done",
@@ -210,6 +209,13 @@ export type ArgsOfTool<Name extends ToolName> = {
     [k in keyof (typeof toolArgsInfo)[Name]["optional"]]?: string | undefined
 };
 
+export function parseMarkdown(content: string) {
+    return (new MarkdownParser().parse(content).children
+        .map((e, i, a) => ({ start: e.char_num ?? 0, end: a[i + 1]?.char_num ?? content.length, elem: e }))
+        .map(e => Object.assign({ text: content.slice(e.start, e.end) }, e))
+    );
+}
+
 export class Agent extends EventEmitter<AgentEvents> {
     public readonly activeFolder: string;
     public readonly modelClient: ModelClient;
@@ -271,11 +277,7 @@ export class Agent extends EventEmitter<AgentEvents> {
         const { data: header, content } = matter(data);
         const taskStatuses = ["done", "pending", "in_progress", "error"] as ["done", "pending", "in_progress", "error"];
         ((a: AgentTaskStatus[]) => { })(taskStatuses);
-        const elems = (new MarkdownParser().parse(content).children
-            .map((e, i, a) => ({ start: e.char_num ?? 0, end: a[i + 1]?.char_num ?? content.length, elem: e }))
-            .map(e => Object.assign({ text: content.slice(e.start, e.end) }, e))
-        );
-        const sections = elems.filter(e => e.elem.type === "heading" && e.elem.depth === 2).map(({ start, end }, i, a) => ({
+        const sections = parseMarkdown(content).filter(e => e.elem.type === "heading" && e.elem.depth === 2).map(({ start, end }, i, a) => ({
             title: /^#+\s*([^\n]*)\s*$/.exec(content.slice(start, end))?.[1] ?? "",
             content: content.slice(end, a[i + 1]?.start ?? content.length),
         }));
@@ -656,7 +658,14 @@ export class Agent extends EventEmitter<AgentEvents> {
             }
         }
         const toolParams = (this.initialParams.toolParams as Record<ToolName, ToolParams>)[tool.name];
-        const grammar = toolParams.grammar !== undefined ? this.strings.grammar[toolParams.grammar] : undefined;
+        const recommendedSyntax = attrs["syntax" as ToolArg];
+        const grammar = (toolParams.grammar !== undefined
+            ? this.strings.grammar[toolParams.grammar]
+            : (recommendedSyntax === undefined
+                ? undefined
+                : this.strings.grammar[recommendedSyntax]
+            )
+        );
         if (grammar === undefined) {
             throw new Error(`cannot find grammar ${JSON.stringify(tool.grammar)}, required for tool ${JSON.stringify(tool.name)}`);
         }
@@ -707,46 +716,49 @@ export class Agent extends EventEmitter<AgentEvents> {
         params.history.add("user", textResult);
         await params.line.step(pre.assistantToUser, textResult, pre.userToAssistant);
     }
-    public async toolCall<T extends ToolName>(params: ToolCallParams<T>): Promise<ToolResult & { name: T }> {
-        if (params.name === "bash") {
+    public async toolCall<T extends ToolName>(params: ToolCallParams<T>): Promise<ToolResult & { toolName: T }> {
+        const toolName = params.name as ToolName;
+        if (toolName === "bash") {
             return await this.executeBash(params as any) as any;
-        } else if (params.name === "python") {
+        } else if (toolName === "python") {
             return await this.executePython(params as any) as any;
-        } else if (params.name === "writefile") {
+        } else if (toolName === "writefile") {
             return await this.executeWriteFile(params as any) as any;
+        } else if (toolName === "readfile") {
+            return await this.executeReadFile(params as any) as any;
+        } else if (toolName === "split_task") {
+            return await this.executeSplitTask(params as any) as any;
+        } else if (toolName === "task_done") {
+            return { toolName: "task_done" } as any;
+        } else {
+            throw new Error(`unexpected situation: cannot find executor for tool ${JSON.stringify(toolName)}`);
         }
-        return { toolName: params.name } as any;
-        // TODO
     }
     public async executeBash(params: ToolCallParams<"bash">): Promise<ToolResultBash> {
         let timeout = this.initialParams.toolParams.bash.defaultTimeout;
         if (params.attrs.timeout !== undefined && params.attrs.timeout.length !== 0) {
             timeout = parseInt(params.attrs.timeout) * 1000;
         }
-        return await new Promise<ToolResultBash>((resolve, reject) => {
-            this.qemu.ssh.shell((err, stream) => {
-                if (err) {
-                    reject(err);
-                    return;
-                }
-                let hasTimeout = false;
-                let chunks: ToolResultBash["outputChunks"] = [];
-                (stream as Stream).on("data", data => chunks.push({ type: "stdout", piece: data.toString() }));
-                stream.stderr.on("data", data => chunks.push({ type: "stderr", piece: data.toString() }));
-                stream.on("exit", (returnCode: number | null, exitSignal: string | undefined) => resolve({
-                    toolName: "bash",
-                    outputChunks: chunks,
-                    returnCode,
-                    exitSignal,
-                    hasTimeout,
-                }));
-                setTimeout(() => {
-                    hasTimeout = true;
-                    stream.end();
-                }, timeout);
-                stream.write(params.text.replaceAll("\n", "\r\n"));
-            });
-        });
+        return await this.qemu.shell({
+            sudoPassword: this.strings.qemuRootPassword,
+        }, stream => new Promise<ToolResultBash>((resolve, reject) => {
+            let hasTimeout = false;
+            let chunks: ToolResultBash["outputChunks"] = [];
+            (stream as Stream).on("data", data => chunks.push({ type: "stdout", piece: data.toString() }));
+            stream.stderr.on("data", data => chunks.push({ type: "stderr", piece: data.toString() }));
+            stream.on("exit", (returnCode: number | null, exitSignal: string | undefined) => resolve({
+                toolName: "bash",
+                outputChunks: chunks,
+                returnCode,
+                exitSignal,
+                hasTimeout,
+            }));
+            setTimeout(() => {
+                hasTimeout = true;
+                stream.end();
+            }, timeout);
+            stream.write(params.text.replaceAll("\n", "\r\n"));
+        }));
     }
     public async executePython(params: ToolCallParams<"python">): Promise<ToolResultPython> {
         let timeout = this.initialParams.toolParams.python.defaultTimeout;
@@ -754,37 +766,102 @@ export class Agent extends EventEmitter<AgentEvents> {
             timeout = parseInt(params.attrs.timeout) * 1000;
         }
         const asRoot = params.attrs.runAsRoot === "true";
+        const sudoPassword = asRoot ? this.strings.qemuRootPassword : undefined;
         const encoding = this.initialParams.toolParams.python.tempScriptEncoding;
-        const file = path.join(this.initialParams.toolParams.python.tempScriptDir, crypto.randomUUID() + ".py");
-        await this.qemu.writeFile(file, params.text, { encoding: encoding as any });
-        const command = [...(asRoot ? ["sudo"] : []), ...this.initialParams.toolParams.python.runCommand, file];
-        return await new Promise<ToolResultPython>((resolve, reject) => {
-            this.qemu.ssh.exec(shellescape(command), (err, stream) => {
-                if (err !== undefined) {
-                    reject(err);
-                    return;
-                }
-                let hasTimeout = false;
-                let chunks: ToolResultBash["outputChunks"] = [];
-                (stream as Stream).on("data", data => chunks.push({ type: "stdout", piece: data.toString() }));
-                stream.stderr.on("data", data => chunks.push({ type: "stderr", piece: data.toString() }));
-                stream.on("exit", (returnCode: number | null, exitSignal: string | undefined) => resolve({
-                    toolName: "python",
-                    outputChunks: chunks,
-                    returnCode,
-                    exitSignal,
-                    hasTimeout,
-                }));
-                setTimeout(() => {
-                    hasTimeout = true;
-                    stream.end();
-                }, timeout);
-                stream.write(params.text.replaceAll("\n", "\r\n"));
-            });
+        const file = await this.qemu.writeTempFile(params.text, { sudoPassword, encoding: encoding as any });
+        return await this.qemu.rwTemplate<ToolResultPython>({
+            sudoPassword: this.strings.qemuRootPassword,
+            command: shellescape([...this.initialParams.toolParams.python.command, file]),
+            errorMessage: `python error`,
+            timeout,
+            cb({ outputChunks, hasTimeout, returnCode }) {
+                return { toolName: "python", outputChunks, hasTimeout, returnCode };
+            },
         });
     }
     public async executeWriteFile(params: ToolCallParams<"writefile">): Promise<ToolResultWriteFile> {
-
+        const lines: { start: number, end: number | null } = { start: 0, end: null };
+        if (params.attrs.lines !== undefined) {
+            const m = toolArgsInfo.writefile.optional.lines.exec(params.attrs.lines);
+            if (m === null) {
+                throw new Error(`unexpected situation: cannot parse tool arg 'lines'`);
+            }
+            lines.start = parseInt(m[1] ?? "0");
+            lines.end = m[2] === "." ? null : parseInt(m[2] ?? "0");
+        }
+        const encoding = params.attrs.encoding ?? this.initialParams.toolParams.writefile.defaultEncoding;
+        let content = (await this.qemu.readFile(params.attrs.path, { encoding: encoding as BufferEncoding })).split("\n");
+        content = [...content.slice(0, lines.start), ...params.text.split("\n"), ...content.slice(lines.end ?? content.length)];
+        await this.qemu.writeFile(params.attrs.path, content.join("\n"), { encoding: encoding as any });
+        return { toolName: "writefile" };
+    }
+    public async executeReadFile(params: ToolCallParams<"readfile">): Promise<ToolResultReadFile> {
+        const lines: { start: number, end: number | null } = { start: 0, end: null };
+        if (params.attrs.lines !== undefined) {
+            const m = toolArgsInfo.readfile.optional.lines.exec(params.attrs.lines);
+            if (m === null) {
+                throw new Error(`unexpected situation: cannot parse tool arg 'lines'`);
+            }
+            lines.start = parseInt(m[1] ?? "0");
+            lines.end = m[2] === "." ? null : parseInt(m[2] ?? "0");
+        }
+        const encoding = params.attrs.encoding ?? this.initialParams.toolParams.writefile.defaultEncoding;
+        let content = await this.qemu.readFile(params.attrs.path, { encoding: encoding as BufferEncoding });
+        const fragment = content.split("\n").slice(lines.start, lines.end ?? undefined).join("\n");
+        return { toolName: "readfile", fragment };
+    }
+    public async executeSplitTask(params: ToolCallParams<"split_task">): Promise<ToolResultSplitTask> {
+        let tasksCreatedRaw: StoredDocument<BaseDB<AgentTask>, AgentTask>[];
+        try {
+            tasksCreatedRaw = await this.addMemosBatched(params.text, ["task"]);
+        } catch (e) {
+            return { toolName: "split_task", tasksCreated: [], error: (e as Error).message };
+        }
+        const tasksCreated = await Promise.all(tasksCreatedRaw.map(e => this.loadTaskDependencies(e.data.content)));
+        return { toolName: "split_task", tasksCreated };
+    }
+    public async addMemosBatched(text: string, types: []): Promise<never[]>;
+    public async addMemosBatched(text: string, types: ["fact"]): Promise<StoredDocument<BaseDB<AgentFact>, AgentFact>[]>;
+    public async addMemosBatched(text: string, types: ["task"]): Promise<StoredDocument<BaseDB<AgentTask>, AgentTask>[]>;
+    public async addMemosBatched(text: string, types: ["rule"]): Promise<StoredDocument<BaseDB<AgentRule>, AgentRule>[]>;
+    public async addMemosBatched(text: string, types: MemoType[]): Promise<(StoredDocument<BaseDB<AgentFact>, AgentFact> | StoredDocument<BaseDB<AgentRule>, AgentRule> | StoredDocument<BaseDB<AgentTask>, AgentTask>)[]>;
+    public async addMemosBatched(text: string, types: MemoType[]) {
+        const sections = parseMarkdown(text).filter(e => e.elem.type === "heading" && e.elem.depth === 1).map((e, i, a) => ({
+            name: (e.elem as MdHeading).children.map(e => "text" in e ? (typeof e.text === "string" ? e.text : "") : "").join(""),
+            text: text.slice(e.start, a[i + 1]?.start),
+        }));
+        let memoType: MemoType | undefined = undefined;
+        if (types.length === 1) {
+            memoType = types[0] as MemoType;
+        }
+        const allowedMemoTypes = {
+            fact: types.some(e => e === "fact"),
+            rule: types.some(e => e === "rule"),
+            task: types.some(e => e === "task"),
+        };
+        return await Promise.all(sections.map(e => {
+            const normalizedName = e.name.trim().toLowerCase();
+            if (memoType === "task" || (allowedMemoTypes["fact"] && normalizedName.startsWith("task"))) {
+                return { name: e.name, doc: Agent.deserialize(this.tasks, "task", e.text) };
+            } else if (memoType === "fact" || (allowedMemoTypes["fact"] && normalizedName.startsWith("fact"))) {
+                return { name: e.name, doc: Agent.deserialize(this.facts, "fact", e.text) };
+            } else if (memoType === "rule" || (allowedMemoTypes["fact"] && normalizedName.startsWith("rule"))) {
+                return { name: e.name, doc: Agent.deserialize(this.rules, "rule", e.text) };
+            } else {
+                throw new Error(`incorrect input: expected the md doc with h1 headings starting with 'fact' | 'rule' | 'task' string`);
+            }
+        }).map(async e => {
+            const name = e.name.trim().matchAll(/[\p{L}\p{N}\p{S}\p{M}~!@#$%\^&*()_+`";:?=\|\\,.<>\[\]{}]+|\/-/gu).toArray().map(e => e[0]).join("_");
+            if (e.doc.content.type === "fact") {
+                return await this.facts.add(name, e.doc.content, e.doc.vectorKeys);
+            } else if (e.doc.content.type === "rule") {
+                return await this.rules.add(name, e.doc.content, e.doc.vectorKeys);
+            } else if (e.doc.content.type === "task") {
+                return await this.tasks.add(name, e.doc.content, e.doc.vectorKeys);
+            } else {
+                throw new Error(`unexpected situation: expected task|rule`);
+            }
+        }));
     }
     public async loadTaskDependencies(task: AgentTask): Promise<AgentTaskLoaded> {
         const documents = await Promise.all(task.dependencies.map(e => this.tasks.get(e, true)));

@@ -10,7 +10,7 @@ import { readConfig } from './config.js';
 import { DocumentDB, DocumentDBVectorIndexConfigScheme } from './memory.js';
 import { Agent, type AgentFact, type AgentParams, type AgentRule, type AgentTask } from './agent.js';
 import { compile } from 'lite-template';
-import { Qemu, QemuConnectParamsScheme, QemuCreateParamsScheme, QemuStartParamsScheme } from './qemu.js';
+import { Qemu, QemuCreateParamsScheme } from './qemu.js';
 
 
 
@@ -91,6 +91,7 @@ export const MainParamsScheme = z.object({
             ask_enum: XMLNameScheme,
         }),
         xmlEscapes: z.record(z.string().regex(/^&[a-zA-Z0-9_#-]+;$/u), z.string()),
+        qemuRootPassword: z.string().regex(/^[^\n\0\t\r]*$/),
     }),
     numbers: z.object({
         stepTokensMax: z.int().positive(),
@@ -120,12 +121,15 @@ export const MainParamsScheme = z.object({
         }),
         python: ToolParamsScheme.extend({
             defaultTimeout: z.int().nonnegative(),
-            runCommand: z.array(z.string()),
-            tempScriptDir: FilePathScheme,
+            command: z.array(z.string()),
             tempScriptEncoding: z.string().regex(/^[a-zA-Z0-9_ -]{1,10}$/u)
         }),
-        writefile: ToolParamsScheme,
-        readfile: ToolParamsScheme,
+        writefile: ToolParamsScheme.extend({
+            defaultEncoding: z.string(),
+        }),
+        readfile: ToolParamsScheme.extend({
+            defaultEncoding: z.string(),
+        }),
         task_done: ToolParamsScheme,
         split_task: ToolParamsScheme,
     }),

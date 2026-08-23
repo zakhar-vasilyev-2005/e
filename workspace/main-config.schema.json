@@ -1223,11 +1223,16 @@
                     "additionalProperties": {
                         "type": "string"
                     }
+                },
+                "qemuRootPassword": {
+                    "type": "string",
+                    "pattern": "^[^\\n\\0\\t\\r]*$"
                 }
             },
             "required": [
                 "tags",
-                "xmlEscapes"
+                "xmlEscapes",
+                "qemuRootPassword"
             ],
             "additionalProperties": false
         },
@@ -1556,1018 +1561,6 @@
         "toolParams": {
             "type": "object",
             "properties": {
-                "writefile": {
-                    "type": "object",
-                    "properties": {
-                        "tool_names": {
-                            "type": "array",
-                            "items": {
-                                "type": "string",
-                                "pattern": "^[a-zA-Z_0-9]+$"
-                            }
-                        },
-                        "max_tokens": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0,
-                            "maximum": 9007199254740991
-                        },
-                        "sampler": {
-                            "minItems": 1,
-                            "type": "array",
-                            "items": {
-                                "oneOf": [
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "greedy"
-                                            }
-                                        },
-                                        "required": [
-                                            "type"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "dist"
-                                            },
-                                            "seed": {
-                                                "type": "integer",
-                                                "minimum": 0,
-                                                "maximum": 32000
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "seed"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "top_k"
-                                            },
-                                            "k": {
-                                                "type": "integer",
-                                                "exclusiveMinimum": 0,
-                                                "maximum": 9007199254740991
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "k"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "top_p"
-                                            },
-                                            "p": {
-                                                "type": "number"
-                                            },
-                                            "min_keep": {
-                                                "type": "integer",
-                                                "exclusiveMinimum": 0,
-                                                "maximum": 9007199254740991
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "p",
-                                            "min_keep"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "min_p"
-                                            },
-                                            "p": {
-                                                "type": "number"
-                                            },
-                                            "min_keep": {
-                                                "type": "integer",
-                                                "exclusiveMinimum": 0,
-                                                "maximum": 9007199254740991
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "p",
-                                            "min_keep"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "typical"
-                                            },
-                                            "p": {
-                                                "type": "number"
-                                            },
-                                            "min_keep": {
-                                                "type": "integer",
-                                                "exclusiveMinimum": 0,
-                                                "maximum": 9007199254740991
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "p",
-                                            "min_keep"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "temp"
-                                            },
-                                            "t": {
-                                                "type": "number"
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "t"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "temp_ext"
-                                            },
-                                            "t": {
-                                                "type": "number"
-                                            },
-                                            "delta": {
-                                                "type": "number"
-                                            },
-                                            "exponent": {
-                                                "type": "number"
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "t",
-                                            "delta",
-                                            "exponent"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "xtc"
-                                            },
-                                            "p": {
-                                                "type": "number"
-                                            },
-                                            "t": {
-                                                "type": "number"
-                                            },
-                                            "min_keep": {
-                                                "type": "integer",
-                                                "exclusiveMinimum": 0,
-                                                "maximum": 9007199254740991
-                                            },
-                                            "seed": {
-                                                "type": "integer",
-                                                "minimum": 0,
-                                                "maximum": 32000
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "p",
-                                            "t",
-                                            "min_keep",
-                                            "seed"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "top_n_sigma"
-                                            },
-                                            "n": {
-                                                "type": "number"
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "n"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "mirostat"
-                                            },
-                                            "seed": {
-                                                "type": "number"
-                                            },
-                                            "tau": {
-                                                "type": "number"
-                                            },
-                                            "eta": {
-                                                "type": "number"
-                                            },
-                                            "m": {
-                                                "type": "number"
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "seed",
-                                            "tau",
-                                            "eta",
-                                            "m"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "mirostat_v2"
-                                            },
-                                            "seed": {
-                                                "type": "number"
-                                            },
-                                            "tau": {
-                                                "type": "number"
-                                            },
-                                            "eta": {
-                                                "type": "number"
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "seed",
-                                            "tau",
-                                            "eta"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "grammar"
-                                            },
-                                            "grammar": {
-                                                "type": "string"
-                                            },
-                                            "root": {
-                                                "type": "string"
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "grammar",
-                                            "root"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "grammar_lazy_patterns"
-                                            },
-                                            "grammar": {
-                                                "type": "string"
-                                            },
-                                            "root": {
-                                                "type": "string"
-                                            },
-                                            "triggers": {
-                                                "type": "array",
-                                                "items": {
-                                                    "anyOf": [
-                                                        {
-                                                            "type": "integer",
-                                                            "minimum": 0,
-                                                            "maximum": 9007199254740991
-                                                        },
-                                                        {
-                                                            "type": "string"
-                                                        }
-                                                    ]
-                                                }
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "grammar",
-                                            "root",
-                                            "triggers"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "penalties"
-                                            },
-                                            "last_n": {
-                                                "type": "integer",
-                                                "exclusiveMinimum": 0,
-                                                "maximum": 9007199254740991
-                                            },
-                                            "repeat": {
-                                                "type": "number"
-                                            },
-                                            "freq": {
-                                                "type": "number"
-                                            },
-                                            "present": {
-                                                "type": "number"
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "last_n"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "dry"
-                                            },
-                                            "n_ctx_train": {
-                                                "type": "number"
-                                            },
-                                            "multiplier": {
-                                                "type": "number"
-                                            },
-                                            "base": {
-                                                "type": "number"
-                                            },
-                                            "allowed_length": {
-                                                "type": "integer",
-                                                "minimum": 0,
-                                                "maximum": 9007199254740991
-                                            },
-                                            "penalty_last_n": {
-                                                "type": "integer",
-                                                "exclusiveMinimum": 0,
-                                                "maximum": 9007199254740991
-                                            },
-                                            "seq_breakers": {
-                                                "type": "array",
-                                                "items": {
-                                                    "type": "string"
-                                                }
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "n_ctx_train",
-                                            "multiplier",
-                                            "base",
-                                            "allowed_length",
-                                            "penalty_last_n",
-                                            "seq_breakers"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "adaptive_p"
-                                            },
-                                            "target": {
-                                                "type": "number"
-                                            },
-                                            "decay": {
-                                                "type": "number"
-                                            },
-                                            "seed": {
-                                                "type": "integer",
-                                                "minimum": 0,
-                                                "maximum": 32000
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "target",
-                                            "decay",
-                                            "seed"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "logit_bias"
-                                            },
-                                            "logit_bias": {
-                                                "type": "array",
-                                                "items": {
-                                                    "type": "object",
-                                                    "properties": {
-                                                        "token": {
-                                                            "type": "integer",
-                                                            "minimum": -9007199254740991,
-                                                            "maximum": 9007199254740991
-                                                        },
-                                                        "bias": {
-                                                            "type": "number"
-                                                        }
-                                                    },
-                                                    "required": [
-                                                        "token",
-                                                        "bias"
-                                                    ],
-                                                    "additionalProperties": false
-                                                }
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "logit_bias"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "infill"
-                                            }
-                                        },
-                                        "required": [
-                                            "type"
-                                        ],
-                                        "additionalProperties": false
-                                    }
-                                ]
-                            }
-                        },
-                        "grammar": {
-                            "type": "string",
-                            "pattern": "^[^\\0\\n\\/]+(\\/[^\\0\\n\\/]+)*$"
-                        }
-                    },
-                    "required": [
-                        "tool_names",
-                        "max_tokens",
-                        "sampler"
-                    ],
-                    "additionalProperties": false
-                },
-                "readfile": {
-                    "type": "object",
-                    "properties": {
-                        "tool_names": {
-                            "type": "array",
-                            "items": {
-                                "type": "string",
-                                "pattern": "^[a-zA-Z_0-9]+$"
-                            }
-                        },
-                        "max_tokens": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0,
-                            "maximum": 9007199254740991
-                        },
-                        "sampler": {
-                            "minItems": 1,
-                            "type": "array",
-                            "items": {
-                                "oneOf": [
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "greedy"
-                                            }
-                                        },
-                                        "required": [
-                                            "type"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "dist"
-                                            },
-                                            "seed": {
-                                                "type": "integer",
-                                                "minimum": 0,
-                                                "maximum": 32000
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "seed"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "top_k"
-                                            },
-                                            "k": {
-                                                "type": "integer",
-                                                "exclusiveMinimum": 0,
-                                                "maximum": 9007199254740991
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "k"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "top_p"
-                                            },
-                                            "p": {
-                                                "type": "number"
-                                            },
-                                            "min_keep": {
-                                                "type": "integer",
-                                                "exclusiveMinimum": 0,
-                                                "maximum": 9007199254740991
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "p",
-                                            "min_keep"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "min_p"
-                                            },
-                                            "p": {
-                                                "type": "number"
-                                            },
-                                            "min_keep": {
-                                                "type": "integer",
-                                                "exclusiveMinimum": 0,
-                                                "maximum": 9007199254740991
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "p",
-                                            "min_keep"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "typical"
-                                            },
-                                            "p": {
-                                                "type": "number"
-                                            },
-                                            "min_keep": {
-                                                "type": "integer",
-                                                "exclusiveMinimum": 0,
-                                                "maximum": 9007199254740991
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "p",
-                                            "min_keep"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "temp"
-                                            },
-                                            "t": {
-                                                "type": "number"
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "t"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "temp_ext"
-                                            },
-                                            "t": {
-                                                "type": "number"
-                                            },
-                                            "delta": {
-                                                "type": "number"
-                                            },
-                                            "exponent": {
-                                                "type": "number"
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "t",
-                                            "delta",
-                                            "exponent"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "xtc"
-                                            },
-                                            "p": {
-                                                "type": "number"
-                                            },
-                                            "t": {
-                                                "type": "number"
-                                            },
-                                            "min_keep": {
-                                                "type": "integer",
-                                                "exclusiveMinimum": 0,
-                                                "maximum": 9007199254740991
-                                            },
-                                            "seed": {
-                                                "type": "integer",
-                                                "minimum": 0,
-                                                "maximum": 32000
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "p",
-                                            "t",
-                                            "min_keep",
-                                            "seed"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "top_n_sigma"
-                                            },
-                                            "n": {
-                                                "type": "number"
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "n"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "mirostat"
-                                            },
-                                            "seed": {
-                                                "type": "number"
-                                            },
-                                            "tau": {
-                                                "type": "number"
-                                            },
-                                            "eta": {
-                                                "type": "number"
-                                            },
-                                            "m": {
-                                                "type": "number"
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "seed",
-                                            "tau",
-                                            "eta",
-                                            "m"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "mirostat_v2"
-                                            },
-                                            "seed": {
-                                                "type": "number"
-                                            },
-                                            "tau": {
-                                                "type": "number"
-                                            },
-                                            "eta": {
-                                                "type": "number"
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "seed",
-                                            "tau",
-                                            "eta"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "grammar"
-                                            },
-                                            "grammar": {
-                                                "type": "string"
-                                            },
-                                            "root": {
-                                                "type": "string"
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "grammar",
-                                            "root"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "grammar_lazy_patterns"
-                                            },
-                                            "grammar": {
-                                                "type": "string"
-                                            },
-                                            "root": {
-                                                "type": "string"
-                                            },
-                                            "triggers": {
-                                                "type": "array",
-                                                "items": {
-                                                    "anyOf": [
-                                                        {
-                                                            "type": "integer",
-                                                            "minimum": 0,
-                                                            "maximum": 9007199254740991
-                                                        },
-                                                        {
-                                                            "type": "string"
-                                                        }
-                                                    ]
-                                                }
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "grammar",
-                                            "root",
-                                            "triggers"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "penalties"
-                                            },
-                                            "last_n": {
-                                                "type": "integer",
-                                                "exclusiveMinimum": 0,
-                                                "maximum": 9007199254740991
-                                            },
-                                            "repeat": {
-                                                "type": "number"
-                                            },
-                                            "freq": {
-                                                "type": "number"
-                                            },
-                                            "present": {
-                                                "type": "number"
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "last_n"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "dry"
-                                            },
-                                            "n_ctx_train": {
-                                                "type": "number"
-                                            },
-                                            "multiplier": {
-                                                "type": "number"
-                                            },
-                                            "base": {
-                                                "type": "number"
-                                            },
-                                            "allowed_length": {
-                                                "type": "integer",
-                                                "minimum": 0,
-                                                "maximum": 9007199254740991
-                                            },
-                                            "penalty_last_n": {
-                                                "type": "integer",
-                                                "exclusiveMinimum": 0,
-                                                "maximum": 9007199254740991
-                                            },
-                                            "seq_breakers": {
-                                                "type": "array",
-                                                "items": {
-                                                    "type": "string"
-                                                }
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "n_ctx_train",
-                                            "multiplier",
-                                            "base",
-                                            "allowed_length",
-                                            "penalty_last_n",
-                                            "seq_breakers"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "adaptive_p"
-                                            },
-                                            "target": {
-                                                "type": "number"
-                                            },
-                                            "decay": {
-                                                "type": "number"
-                                            },
-                                            "seed": {
-                                                "type": "integer",
-                                                "minimum": 0,
-                                                "maximum": 32000
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "target",
-                                            "decay",
-                                            "seed"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "logit_bias"
-                                            },
-                                            "logit_bias": {
-                                                "type": "array",
-                                                "items": {
-                                                    "type": "object",
-                                                    "properties": {
-                                                        "token": {
-                                                            "type": "integer",
-                                                            "minimum": -9007199254740991,
-                                                            "maximum": 9007199254740991
-                                                        },
-                                                        "bias": {
-                                                            "type": "number"
-                                                        }
-                                                    },
-                                                    "required": [
-                                                        "token",
-                                                        "bias"
-                                                    ],
-                                                    "additionalProperties": false
-                                                }
-                                            }
-                                        },
-                                        "required": [
-                                            "type",
-                                            "logit_bias"
-                                        ],
-                                        "additionalProperties": false
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "type": {
-                                                "type": "string",
-                                                "const": "infill"
-                                            }
-                                        },
-                                        "required": [
-                                            "type"
-                                        ],
-                                        "additionalProperties": false
-                                    }
-                                ]
-                            }
-                        },
-                        "grammar": {
-                            "type": "string",
-                            "pattern": "^[^\\0\\n\\/]+(\\/[^\\0\\n\\/]+)*$"
-                        }
-                    },
-                    "required": [
-                        "tool_names",
-                        "max_tokens",
-                        "sampler"
-                    ],
-                    "additionalProperties": false
-                },
                 "bash": {
                     "type": "object",
                     "properties": {
@@ -3065,12 +2058,18 @@
                         "grammar": {
                             "type": "string",
                             "pattern": "^[^\\0\\n\\/]+(\\/[^\\0\\n\\/]+)*$"
+                        },
+                        "defaultTimeout": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
                         }
                     },
                     "required": [
                         "tool_names",
                         "max_tokens",
-                        "sampler"
+                        "sampler",
+                        "defaultTimeout"
                     ],
                     "additionalProperties": false
                 },
@@ -3571,12 +2570,1054 @@
                         "grammar": {
                             "type": "string",
                             "pattern": "^[^\\0\\n\\/]+(\\/[^\\0\\n\\/]+)*$"
+                        },
+                        "defaultTimeout": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                        },
+                        "command": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "tempScriptDir": {
+                            "type": "string",
+                            "pattern": "^\\/?[^\\0\\n\\/]+(\\/[^\\0\\n\\/]+)*$"
+                        },
+                        "tempScriptEncoding": {
+                            "type": "string",
+                            "pattern": "^[a-zA-Z0-9_ -]{1,10}$"
                         }
                     },
                     "required": [
                         "tool_names",
                         "max_tokens",
-                        "sampler"
+                        "sampler",
+                        "defaultTimeout",
+                        "command",
+                        "tempScriptEncoding"
+                    ],
+                    "additionalProperties": false
+                },
+                "writefile": {
+                    "type": "object",
+                    "properties": {
+                        "tool_names": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "pattern": "^[a-zA-Z_0-9]+$"
+                            }
+                        },
+                        "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                        },
+                        "sampler": {
+                            "minItems": 1,
+                            "type": "array",
+                            "items": {
+                                "oneOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "greedy"
+                                            }
+                                        },
+                                        "required": [
+                                            "type"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "dist"
+                                            },
+                                            "seed": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 32000
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "seed"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "top_k"
+                                            },
+                                            "k": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0,
+                                                "maximum": 9007199254740991
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "k"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "top_p"
+                                            },
+                                            "p": {
+                                                "type": "number"
+                                            },
+                                            "min_keep": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0,
+                                                "maximum": 9007199254740991
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "p",
+                                            "min_keep"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "min_p"
+                                            },
+                                            "p": {
+                                                "type": "number"
+                                            },
+                                            "min_keep": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0,
+                                                "maximum": 9007199254740991
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "p",
+                                            "min_keep"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "typical"
+                                            },
+                                            "p": {
+                                                "type": "number"
+                                            },
+                                            "min_keep": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0,
+                                                "maximum": 9007199254740991
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "p",
+                                            "min_keep"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "temp"
+                                            },
+                                            "t": {
+                                                "type": "number"
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "t"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "temp_ext"
+                                            },
+                                            "t": {
+                                                "type": "number"
+                                            },
+                                            "delta": {
+                                                "type": "number"
+                                            },
+                                            "exponent": {
+                                                "type": "number"
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "t",
+                                            "delta",
+                                            "exponent"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "xtc"
+                                            },
+                                            "p": {
+                                                "type": "number"
+                                            },
+                                            "t": {
+                                                "type": "number"
+                                            },
+                                            "min_keep": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0,
+                                                "maximum": 9007199254740991
+                                            },
+                                            "seed": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 32000
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "p",
+                                            "t",
+                                            "min_keep",
+                                            "seed"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "top_n_sigma"
+                                            },
+                                            "n": {
+                                                "type": "number"
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "n"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "mirostat"
+                                            },
+                                            "seed": {
+                                                "type": "number"
+                                            },
+                                            "tau": {
+                                                "type": "number"
+                                            },
+                                            "eta": {
+                                                "type": "number"
+                                            },
+                                            "m": {
+                                                "type": "number"
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "seed",
+                                            "tau",
+                                            "eta",
+                                            "m"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "mirostat_v2"
+                                            },
+                                            "seed": {
+                                                "type": "number"
+                                            },
+                                            "tau": {
+                                                "type": "number"
+                                            },
+                                            "eta": {
+                                                "type": "number"
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "seed",
+                                            "tau",
+                                            "eta"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "grammar"
+                                            },
+                                            "grammar": {
+                                                "type": "string"
+                                            },
+                                            "root": {
+                                                "type": "string"
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "grammar",
+                                            "root"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "grammar_lazy_patterns"
+                                            },
+                                            "grammar": {
+                                                "type": "string"
+                                            },
+                                            "root": {
+                                                "type": "string"
+                                            },
+                                            "triggers": {
+                                                "type": "array",
+                                                "items": {
+                                                    "anyOf": [
+                                                        {
+                                                            "type": "integer",
+                                                            "minimum": 0,
+                                                            "maximum": 9007199254740991
+                                                        },
+                                                        {
+                                                            "type": "string"
+                                                        }
+                                                    ]
+                                                }
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "grammar",
+                                            "root",
+                                            "triggers"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "penalties"
+                                            },
+                                            "last_n": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0,
+                                                "maximum": 9007199254740991
+                                            },
+                                            "repeat": {
+                                                "type": "number"
+                                            },
+                                            "freq": {
+                                                "type": "number"
+                                            },
+                                            "present": {
+                                                "type": "number"
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "last_n"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "dry"
+                                            },
+                                            "n_ctx_train": {
+                                                "type": "number"
+                                            },
+                                            "multiplier": {
+                                                "type": "number"
+                                            },
+                                            "base": {
+                                                "type": "number"
+                                            },
+                                            "allowed_length": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
+                                            },
+                                            "penalty_last_n": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0,
+                                                "maximum": 9007199254740991
+                                            },
+                                            "seq_breakers": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "string"
+                                                }
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "n_ctx_train",
+                                            "multiplier",
+                                            "base",
+                                            "allowed_length",
+                                            "penalty_last_n",
+                                            "seq_breakers"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "adaptive_p"
+                                            },
+                                            "target": {
+                                                "type": "number"
+                                            },
+                                            "decay": {
+                                                "type": "number"
+                                            },
+                                            "seed": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 32000
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "target",
+                                            "decay",
+                                            "seed"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "logit_bias"
+                                            },
+                                            "logit_bias": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "token": {
+                                                            "type": "integer",
+                                                            "minimum": -9007199254740991,
+                                                            "maximum": 9007199254740991
+                                                        },
+                                                        "bias": {
+                                                            "type": "number"
+                                                        }
+                                                    },
+                                                    "required": [
+                                                        "token",
+                                                        "bias"
+                                                    ],
+                                                    "additionalProperties": false
+                                                }
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "logit_bias"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "infill"
+                                            }
+                                        },
+                                        "required": [
+                                            "type"
+                                        ],
+                                        "additionalProperties": false
+                                    }
+                                ]
+                            }
+                        },
+                        "grammar": {
+                            "type": "string",
+                            "pattern": "^[^\\0\\n\\/]+(\\/[^\\0\\n\\/]+)*$"
+                        },
+                        "defaultEncoding": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "tool_names",
+                        "max_tokens",
+                        "sampler",
+                        "defaultEncoding"
+                    ],
+                    "additionalProperties": false
+                },
+                "readfile": {
+                    "type": "object",
+                    "properties": {
+                        "tool_names": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "pattern": "^[a-zA-Z_0-9]+$"
+                            }
+                        },
+                        "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                        },
+                        "sampler": {
+                            "minItems": 1,
+                            "type": "array",
+                            "items": {
+                                "oneOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "greedy"
+                                            }
+                                        },
+                                        "required": [
+                                            "type"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "dist"
+                                            },
+                                            "seed": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 32000
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "seed"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "top_k"
+                                            },
+                                            "k": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0,
+                                                "maximum": 9007199254740991
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "k"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "top_p"
+                                            },
+                                            "p": {
+                                                "type": "number"
+                                            },
+                                            "min_keep": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0,
+                                                "maximum": 9007199254740991
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "p",
+                                            "min_keep"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "min_p"
+                                            },
+                                            "p": {
+                                                "type": "number"
+                                            },
+                                            "min_keep": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0,
+                                                "maximum": 9007199254740991
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "p",
+                                            "min_keep"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "typical"
+                                            },
+                                            "p": {
+                                                "type": "number"
+                                            },
+                                            "min_keep": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0,
+                                                "maximum": 9007199254740991
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "p",
+                                            "min_keep"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "temp"
+                                            },
+                                            "t": {
+                                                "type": "number"
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "t"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "temp_ext"
+                                            },
+                                            "t": {
+                                                "type": "number"
+                                            },
+                                            "delta": {
+                                                "type": "number"
+                                            },
+                                            "exponent": {
+                                                "type": "number"
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "t",
+                                            "delta",
+                                            "exponent"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "xtc"
+                                            },
+                                            "p": {
+                                                "type": "number"
+                                            },
+                                            "t": {
+                                                "type": "number"
+                                            },
+                                            "min_keep": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0,
+                                                "maximum": 9007199254740991
+                                            },
+                                            "seed": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 32000
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "p",
+                                            "t",
+                                            "min_keep",
+                                            "seed"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "top_n_sigma"
+                                            },
+                                            "n": {
+                                                "type": "number"
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "n"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "mirostat"
+                                            },
+                                            "seed": {
+                                                "type": "number"
+                                            },
+                                            "tau": {
+                                                "type": "number"
+                                            },
+                                            "eta": {
+                                                "type": "number"
+                                            },
+                                            "m": {
+                                                "type": "number"
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "seed",
+                                            "tau",
+                                            "eta",
+                                            "m"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "mirostat_v2"
+                                            },
+                                            "seed": {
+                                                "type": "number"
+                                            },
+                                            "tau": {
+                                                "type": "number"
+                                            },
+                                            "eta": {
+                                                "type": "number"
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "seed",
+                                            "tau",
+                                            "eta"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "grammar"
+                                            },
+                                            "grammar": {
+                                                "type": "string"
+                                            },
+                                            "root": {
+                                                "type": "string"
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "grammar",
+                                            "root"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "grammar_lazy_patterns"
+                                            },
+                                            "grammar": {
+                                                "type": "string"
+                                            },
+                                            "root": {
+                                                "type": "string"
+                                            },
+                                            "triggers": {
+                                                "type": "array",
+                                                "items": {
+                                                    "anyOf": [
+                                                        {
+                                                            "type": "integer",
+                                                            "minimum": 0,
+                                                            "maximum": 9007199254740991
+                                                        },
+                                                        {
+                                                            "type": "string"
+                                                        }
+                                                    ]
+                                                }
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "grammar",
+                                            "root",
+                                            "triggers"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "penalties"
+                                            },
+                                            "last_n": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0,
+                                                "maximum": 9007199254740991
+                                            },
+                                            "repeat": {
+                                                "type": "number"
+                                            },
+                                            "freq": {
+                                                "type": "number"
+                                            },
+                                            "present": {
+                                                "type": "number"
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "last_n"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "dry"
+                                            },
+                                            "n_ctx_train": {
+                                                "type": "number"
+                                            },
+                                            "multiplier": {
+                                                "type": "number"
+                                            },
+                                            "base": {
+                                                "type": "number"
+                                            },
+                                            "allowed_length": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
+                                            },
+                                            "penalty_last_n": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0,
+                                                "maximum": 9007199254740991
+                                            },
+                                            "seq_breakers": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "string"
+                                                }
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "n_ctx_train",
+                                            "multiplier",
+                                            "base",
+                                            "allowed_length",
+                                            "penalty_last_n",
+                                            "seq_breakers"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "adaptive_p"
+                                            },
+                                            "target": {
+                                                "type": "number"
+                                            },
+                                            "decay": {
+                                                "type": "number"
+                                            },
+                                            "seed": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 32000
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "target",
+                                            "decay",
+                                            "seed"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "logit_bias"
+                                            },
+                                            "logit_bias": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "token": {
+                                                            "type": "integer",
+                                                            "minimum": -9007199254740991,
+                                                            "maximum": 9007199254740991
+                                                        },
+                                                        "bias": {
+                                                            "type": "number"
+                                                        }
+                                                    },
+                                                    "required": [
+                                                        "token",
+                                                        "bias"
+                                                    ],
+                                                    "additionalProperties": false
+                                                }
+                                            }
+                                        },
+                                        "required": [
+                                            "type",
+                                            "logit_bias"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "const": "infill"
+                                            }
+                                        },
+                                        "required": [
+                                            "type"
+                                        ],
+                                        "additionalProperties": false
+                                    }
+                                ]
+                            }
+                        },
+                        "grammar": {
+                            "type": "string",
+                            "pattern": "^[^\\0\\n\\/]+(\\/[^\\0\\n\\/]+)*$"
+                        },
+                        "defaultEncoding": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "tool_names",
+                        "max_tokens",
+                        "sampler",
+                        "defaultEncoding"
                     ],
                     "additionalProperties": false
                 },
@@ -4594,10 +4635,10 @@
                 }
             },
             "required": [
-                "writefile",
-                "readfile",
                 "bash",
                 "python",
+                "writefile",
+                "readfile",
                 "task_done",
                 "split_task"
             ],

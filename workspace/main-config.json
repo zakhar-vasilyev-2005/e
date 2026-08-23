@@ -126,7 +126,8 @@
       "&amp;": "&",
       "&quot;": "\"",
       "&apos;": "'"
-    }
+    },
+    "qemuRootPassword": "password"
   },
   "toolParams": {
     "bash": {
@@ -139,7 +140,8 @@
       "tool_names": [
         "bash"
       ],
-      "grammar": "tool/bash"
+      "grammar": "tool/bash",
+      "defaultTimeout": 30000
     },
     "python": {
       "max_tokens": 2000,
@@ -151,7 +153,12 @@
       "tool_names": [
         "bash"
       ],
-      "grammar": "tool/python"
+      "grammar": "tool/python",
+      "command": [
+        "python3"
+      ],
+      "defaultTimeout": 60000,
+      "tempScriptEncoding": "utf8"
     },
     "readfile": {
       "max_tokens": 2000,
@@ -163,7 +170,8 @@
       "tool_names": [
         "bash"
       ],
-      "grammar": "tool/readfile"
+      "grammar": "tool/readfile",
+      "defaultEncoding": "utf8"
     },
     "writefile": {
       "max_tokens": 2000,
@@ -175,7 +183,8 @@
       "tool_names": [
         "bash"
       ],
-      "grammar": "tool/writefile"
+      "grammar": "tool/writefile",
+      "defaultEncoding": "utf8"
     },
     "split_task": {
       "max_tokens": 2000,

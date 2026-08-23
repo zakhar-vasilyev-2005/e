@@ -7,7 +7,10 @@ import { Socket } from 'net';
 import { EventEmitter } from 'events';
 import * as z from 'zod';
 import type { Serializable } from './serializable.js';
-import type { WriteFileOptions as SSHWriteFileOptions } from 'ssh2';
+import type { ClientChannel, PseudoTtyOptions } from 'ssh2';
+import { stripField, stripUndefined, type OrUndefined, type PromiseOrNot } from './typeutils.js';
+import shellescape from 'shell-escape';
+import type { Duplex } from 'stream';
 
 
 
@@ -210,6 +213,22 @@ export class QMP extends EventEmitter<QMPEvents> {
         await new Promise(resolve => this.socket.end(() => resolve(undefined)));
     }
 }
+export type RwTemplateCbParams = {
+    stdout: string,
+    stderr: string,
+    outputChunks: { type: "stdout" | "stderr", piece: string }[],
+    returnCode: number | null,
+    hasTimeout: boolean,
+};
+export type RwTemplateParams<R> = RwBaseOptions & {
+    command: string,
+    errorMessage: string,
+    cb: (params: RwTemplateCbParams) => PromiseOrNot<R>,
+};
+export type RwBaseOptions = {
+    sudoPassword?: string | undefined,
+    timeout?: number | undefined,
+}
 export class Qemu {
     public static async create(params: QemuCreateParams) {
         try {
@@ -381,20 +400,154 @@ export class Qemu {
         ]).then(([qmp, ssh]) => new Qemu(qmp, ssh));
     }
     public constructor(public readonly qmp: QMP, public readonly ssh: Client) { }
-    public async writeFile(file: string, content: Buffer | string, options: SSHWriteFileOptions) {
-        await new Promise((resolve, reject) => {
-            this.ssh.sftp(async (err, sftp) => {
+    public async rwTemplate<R>(params: RwTemplateParams<R>) {
+        const markers = {
+            ok: crypto.randomUUID(),
+            error: crypto.randomUUID(),
+            end: crypto.randomUUID(),
+        };
+        const endPattern = new RegExp(`(${markers.ok}|${markers.error})-(\d+)-${markers.end}`, "");
+        return await this.shell<R>({ sudoPassword: params.sudoPassword }, stream => new Promise((resolve, reject) => {
+            let outputChunks: { type: "stdout" | "stderr", piece: string }[] = [];
+            let [stdout, stderr, hasError, hasTimeout] = ["", "", false, false];
+            const trimMarker = (start: number, end: number) => {
+                const length = end - start;
+                if (length <= 0) { return; }
+                stdout = stdout.slice(0, start) + stdout.slice(start + length);
+                let [pieceStart, itemIndex] = [0, 0];
+                let toDelete: { itemIndex: number, itemStart: number, itemEnd: number }[] = [];
+                while (true) {
+                    const elem = outputChunks[itemIndex];
+                    if (elem === undefined) { break; }
+                    if (elem.type === "stderr") { continue; }
+                    const piece = elem.piece;
+                    const pieceEnd = pieceStart + piece.length;
+                    if (pieceEnd >= start && pieceStart <= end) {
+                        toDelete.push({
+                            itemIndex,
+                            itemStart: Math.max(0, start - pieceStart),
+                            itemEnd: Math.min(end - pieceStart, piece.length),
+                        });
+                    }
+                    pieceStart = pieceEnd;
+                    itemIndex++;
+                }
+                toDelete.forEach(e => {
+                    let piece = outputChunks[e.itemIndex]?.piece;
+                    if (piece === undefined) {
+                        throw new Error(`unexpected situation: bad outputChunks indexing`);
+                    }
+                    piece = piece.slice(0, e.itemStart) + piece.slice(e.itemEnd);
+                    outputChunks[e.itemIndex] = { type: "stdout", piece };
+                });
+            }
+            const pushText = (type: "stdout" | "stderr", text: string) => {
+                if (type === "stdout") {
+                    stdout += text;
+                } else if (type === "stderr") {
+                    stderr += text;
+                }
+                const last = outputChunks.at(-1);
+                if (last?.type === type) {
+                    last.piece += text;
+                } else {
+                    outputChunks.push({ type: "stdout", piece: text });
+                }
+            }
+            (stream as Duplex).on("data", data => {
+                pushText("stdout", data.toString());
+                hasError ||= stdout.includes(markers.error);
+                const m = endPattern.exec(stdout);
+                if (m !== null) {
+                    trimMarker(m.index, m.index + m[0].length);
+                    hasError = m[0].startsWith(markers.error);
+                    returnCode = parseInt(m[1] ?? "error");
+                    if (returnCode === 124 && params.timeout !== undefined) {
+                        hasTimeout = true;
+                        returnCode = null;
+                    }
+                    if (hasError || m[0].startsWith(markers.ok)) {
+                        stream.end();
+                    }
+                }
+            });
+            stream.stderr.on("data", data => pushText("stderr", data.toString()));
+            let returnCode: number | null = null;
+            stream.on("exit", code => { returnCode = code; });
+            (stream as Duplex).on("close", async () => {
+                if (returnCode === null) {
+                    throw new Error(`unexpected situation: cannot extract returncode`);
+                }
+                if (hasError) {
+                    const comment = stderr.length !== 0 ? stderr : stdout;
+                    const message = comment.length === 0 ? params.errorMessage : `${params.errorMessage}: ${comment}`;
+                    reject(Object.assign(new Error(message), { stdout, stderr, returncode: returnCode }));
+                } else {
+                    resolve(await params.cb({ stdout, stderr, outputChunks, hasTimeout, returnCode }));
+                }
+            });
+            const commands = {
+                main: params.timeout === undefined ? params.command : `timeout ${params.timeout / 1000}s ${params.command}`,
+                then: `echo -n "${markers.ok}-$?-${markers.end}"`,
+                else_: `echo -n "${markers.error}-$?-${markers.end}"`,
+            }
+            stream.write(`${commands.main} && ${commands.then} || ${commands.else_}`);
+        }));
+    }
+    public async writeFile(file: string, content: Buffer | string, options: RwBaseOptions & { encoding?: BufferEncoding | undefined }) {
+        const bytes = typeof content === "string" ? Buffer.from(content, options.encoding ?? "utf8") : content;
+        await this.rwTemplate({
+            sudoPassword: options.sudoPassword,
+            timeout: options.timeout,
+            command: `base64 -d <<< ${shellescape([bytes.toString("base64")])} > ${shellescape([file])}`,
+            errorMessage: `cannot write file ${JSON.stringify(file)} with ${bytes.byteLength} bytes`,
+            cb: () => { },
+        });
+    }
+    public async readFile(file: string, options: RwBaseOptions & { encoding?: undefined }): Promise<Buffer>;
+    public async readFile(file: string, options: RwBaseOptions & { encoding: BufferEncoding }): Promise<string>;
+    public async readFile(file: string, options: RwBaseOptions & { encoding?: BufferEncoding | undefined }): Promise<Buffer | string> {
+        return await this.rwTemplate({
+            sudoPassword: options.sudoPassword,
+            timeout: options.timeout,
+            command: `base64 ${shellescape([file])}`,
+            errorMessage: `cannot read file ${JSON.stringify(file)}`,
+            cb({ stdout }) {
+                const content = Buffer.from(stdout, "base64");
+                return options.encoding === undefined ? content : content.toString(options.encoding);
+            },
+        });
+    }
+    public async shell<R>(options: OrUndefined<PseudoTtyOptions & { sudoPassword: string }>, cb: (stream: ClientChannel) => PromiseOrNot<R>) {
+        return await new Promise<R>((resolve, reject) => {
+            this.ssh.shell(stripField(stripUndefined(options), "sudoPassword"), async (err, stream) => {
                 if (err !== undefined) {
                     reject(err);
                     return;
                 }
-                await new Promise((resolveWrite, rejectWrite) => {
-                    sftp.writeFile(file, content, options, err => err === null ? resolveWrite(undefined) : rejectWrite(err));
-                });
-                sftp.end();
-                resolve(undefined);
+                if (options.sudoPassword !== undefined) {
+                    stream.write(`sudo -v >/dev/null 2>&1\n${options.sudoPassword}\n`);
+                }
+                resolve(await cb(stream));
             });
         });
+    }
+    public async writeTempFile(content: Buffer | string, options: RwBaseOptions & OrUndefined<{
+        encoding: BufferEncoding,
+        tmpNamePrefix: string,
+        tmpNameSuffix: string,
+    }>) {
+        const template = `${options.tmpNamePrefix ?? "tmp"}-XXXXXXXXXX-`;
+        const file = await this.rwTemplate({
+            sudoPassword: options.sudoPassword,
+            command: shellescape(["mktemp", ...(options.tmpNameSuffix === undefined ? [] : ["--suffix", options.tmpNameSuffix]), template]),
+            errorMessage: `cannot create temp file`,
+            cb({ stdout }) {
+                return stdout.trim();
+            },
+        });
+        await this.writeFile(file, content, options);
+        return file;
     }
 }
 
