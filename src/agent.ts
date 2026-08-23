@@ -431,7 +431,10 @@ export class Agent extends EventEmitter<AgentEvents> {
             }
             await this.solve(task);
         }
-        // TODO: update task resolver (currently it doesn't handle empty task list and error-ed tasks)
+        // TODO: update task resolver: retrying error tasks, empty task list handling
+        // TODO: use mtime
+        // TODO: make examples (ai)
+
         // TODO: make task solving asynchronous
     }
     public async solve(taskDocument: StoredDocument<BaseDB<AgentTask>, AgentTask>) {
@@ -439,6 +442,9 @@ export class Agent extends EventEmitter<AgentEvents> {
         const pre = agent.modelClient.prefixes;
         const line = await ClientLine.create(agent.modelClient, await agent.findLineId());
         let taskSuccess = false;
+        await agent.tasks.update(taskDocument.name, {
+            content: Object.assign(taskDocument.data.content, { status: "in_progress" })
+        });
         try {
             const history = await agent.initHistory(line, taskDocument.data.content); // ends with assistant role
             while (true) {
@@ -482,21 +488,20 @@ export class Agent extends EventEmitter<AgentEvents> {
                     break;
                 }
                 continue;
-                // mb task_done tool is not the best option to stop the task. there is an option to make <status>done</status>, but it's also not the best.
-                // TODO: make 'ask' questions when EOG without toolCall
-                // mb we need to align model to make EOGs instead of tool calls and then manually add toolcalls and hide the call process from ai? giving only results? w questions of course.
-                // yup.
+                // Align model (by texts) to make EOGs instead of tool_call. Say it to think mainly (not in sysprompt, in usermessage in spec. section which appears more than once), not work. If cant think something new (and useful), stop. Asks multiple on EOG, selects behaviour. Asks toolcall as asks others. Asks even the stop. May think shortest, but can't nothink / {make toolcall in think}. First thinked, then toolcall. Or other ask result. Ask not once, splitten to multiple asks.
                 // TODO: remake tool call
                 // TODO: make patterns and grammar
+                // TODO: recall по смене темы.
+                // TODO: recall по ручному вызову.
+                // TODO: Обновление весов воспоминаний. Дата последнего использования воспоминания. От даты и веса считается новый вес.
+                // TODO: вынеси причины остановки во что-то отдельное, что будет выдавать конкретные причины остановки после step pull.
+                // TODO: Убери сэмплер грамматики для размышлений. Он нужен разве что, если модель будет выводить мысли структурированно, в тегах, но тогда запрети разделитель абзаца и <br> вне тегов. Добавь в промпт указания на "небольшие шаги".
             }
-            // TODO: make loop of steps
-            // TODO: make history compression
-            // TODO: make task status changing
+            // TODO: make history compression (in separate thread, this cleaned at first, new func)
 
         } finally {
-            await agent.tasks.update(taskDocument.name, {
-                content: Object.assign(taskDocument.data.content, { status: (taskSuccess ? "done" : "error") as AgentTask["status"] })
-            })
+            const updates: Partial<AgentTask> = taskSuccess ? { status: "done" } : { status: "error", tries: taskDocument.data.content.tries + 1 };
+            await agent.tasks.update(taskDocument.name, { content: Object.assign(taskDocument.data.content, updates) });
             await line.free();
         }
     }
@@ -521,6 +526,27 @@ export class Agent extends EventEmitter<AgentEvents> {
         }
         await line.step(pre.userToAssistant);
         return history;
+    }
+    public async compressHistory(history: Message[]): Promise<Message[]> {
+        // TODO: steal existing
+        /*
+        Refine (последовательное уточнение): Обрабатывает диалог по частям, но каждая следующая часть добавляется к уже имеющемуся краткому содержанию, которое модель постоянно уточняет и дополняет
+        - Когда использовать: Для повествовательных диалогов, где важен хронологический порядок и логика развития
+        - Преимущество: Лучше сохраняет последовательность и контекст, чем Map-Reduce.
+        */
+        // на каждом выходном сообщении делай tryRecall -- нам нужны релевантные данные в сжатом *контексте*
+        // Используй XML-теги для жёсткого разделения и придания структуры и markdown-заголовки для более мягкого разделения по смыслу.
+        // сложная функция затухания для весов. Хранить "изменяемость" весов в Payload.
+        /*
+        Улучши метод Refine. Нам нужны: некоторая скорость (мы можем выделить на сжатие не больше времени, чем тройной объём того, за сколько генерировались все сообщения), связность (нам критически важно, чтобы ИИ не воспринимал эту информацию как garbage input, т.к. модель весьма невелика и "штраф" общего качества вывода, который даёт garbage input нам особенно вреден) и сохранение максимального количества информации (модель работает в режиме агента и ей нужно не потерять информацию из прошлых шагов и вызовов инструментов). Ты свободен в выборе метода сжатия, но важно, чтобы он выполнялся той же моделью, что генерировала сообщения, т.к. мы не можем загрузить в память даже 1B модель из-за критической нехватки места (мы часто сжимаем контекст и держим его небольшим, так что даже освобождение kv-кэша не даст нам места под ещё одну модель). Также учитывай, что у тебя есть доступ к механизму "чекпоинтов" и наш движок инференса может бесплатно откатить состояние любой последовательности к любому ранее сгенерированному токену. Используй это, если оно принесёт реальную пользу.
+ Допустимо и полезно будет выводить часть информации в отдельные recall-блоки, т.к. модель работает как агент и при высокой энтропии логитов (либо самостоятельном вызове, либо сильной смене темы от предыдущего вызова) получает отфильтрованные ею же по релевантности факты и инструкции из памяти. В памяти испольтзуется векторный поиск по записям. Каждая запись (факт или инструкция) имеет набор чётко заданных ключей, чьи эмбеддинги и являются ключами для поиска. Мы чётко задаём, при каких эмбеддингах контекста будет предлагаться запись из памяти. Записи, подходящие по векторам выдаются только на быструю выборку релевантных, только выбранные попадают в реальный контекст.
+ Ты можешь (и это будет наиболее оптимально) сделать ставку именно на модуль памяти, сжимая диалог не столько в контекст, сколько в память, но тем не менее, что-то всё равно необходимо держать в контексте.
+ У каждого ключа каждой записи есть вес. Вес домножается на нормированный эмбеддинг ключа при помещении в БД. Поиск по скалярному произведению. Будь аккуратен с весами, это полезный инструмент, но чувствительный.
+ Ориентируйся на псевдокод и скрипт управления -- так будет легче распланировать наиболее оптимальный алгоритм сжатия.
+ Ты можешь использовать как основу любой метод суммаризации, и добавлять в алгоритм любые иные методы и идеи, полностью или частями.
+ Постарайся не захламлять память, но и не удалять информацию безвозвратно, тут тебе в помощь только веса воспоминаний: чуть больше и запись будет слишком частой, чуть меньше и она перестанет появляться вообще. Можешь не указывать конкретных значений весов, но хотя бы дай знать, на что ориентироваться при их установке.
+ Если тебе надо подумать ещё, говори, токены я выделю.
+        */
     }
     public async findLineId() {
         let lineId: string;
