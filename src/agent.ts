@@ -13,34 +13,43 @@ import { MarkdownParser, type Heading as MdHeading } from 'md2ast';
 import { Qemu } from './qemu.js';
 import { Stream } from 'stream';
 import shellescape from 'shell-escape';
+import { parse } from 'yaml';
+
 
 
 type PromiseOrNot<T> = T | Promise<T>;
 
 
-export type MemoType = "rule" | "task" | "fact";
-export type AgentFact = {
-    type: "fact",
+export type AgentDocBase = {
+    type: "rule" | "task" | "fact",
     briefly: string,
-    body: string
+    body: string,
 };
-export type AgentRule = {
-    type: "rule",
-    briefly: string,
-    body: string
+export type AgentDocKeyData = {
+    weightFixed: boolean,
 };
-export type AgentTask = {
+export type AgentFact = AgentDocBase & { type: "fact" };
+export type AgentRule = AgentDocBase & { type: "rule" };
+export type AgentTask = AgentDocBase & {
     type: "task",
     status: AgentTaskStatus,
     dependencies: string[], // names of tasks
-    briefly: string,
-    body: string,
     tries: number,
 };
 export type AgentTaskLoaded = Omit<AgentTask, "dependencies"> & {
     dependencies: AgentTaskLoaded[],
 };
 export type AgentTaskStatus = "done" | "pending" | "in_progress" | "error";
+export type AgentTaskStored = StoredDocument<BaseDB<AgentTask, AgentDocKeyData>, AgentTask, AgentDocKeyData>;
+export type AgentRuleStored = StoredDocument<BaseDB<AgentRule, AgentDocKeyData>, AgentRule, AgentDocKeyData>;
+export type AgentFactStored = StoredDocument<BaseDB<AgentFact, AgentDocKeyData>, AgentFact, AgentDocKeyData>;
+export type AgentTaskConstructor = DocumentDataConstructor<AgentTask, AgentDocKeyData>;
+export type AgentRuleConstructor = DocumentDataConstructor<AgentRule, AgentDocKeyData>;
+export type AgentFactConstructor = DocumentDataConstructor<AgentFact, AgentDocKeyData>;
+export type AgentDoc = AgentFact | AgentRule | AgentTask;
+export type AgentDocLoaded = AgentFact | AgentRule | AgentTaskLoaded;
+export type AgentDocStored = AgentFactStored | AgentRuleStored | AgentTaskStored;
+export type AgentDocConstructor = AgentFactConstructor | AgentRuleConstructor | AgentTaskConstructor;
 
 export type RecallQuery = {
     query: string
@@ -60,21 +69,22 @@ export type AgentParams = {
         patterns: {
             systemPrompt: (ctx: { agentConfig: AgentParams }) => PromiseOrNot<string>,
             task: (ctx: { agentConfig: AgentParams, task: AgentTaskLoaded }) => PromiseOrNot<string>,
-            recallSelector: (ctx: { agentConfig: AgentParams, memories: (AgentRule | AgentFact | AgentTaskLoaded)[] }) => PromiseOrNot<string>,
-            recallResult: (ctx: { agentConfig: AgentParams, memories: (AgentRule | AgentFact | AgentTaskLoaded)[] }) => PromiseOrNot<string>,
+            recallSelector: (ctx: { agentConfig: AgentParams, memories: AgentDocLoaded[] }) => PromiseOrNot<string>,
+            recallResult: (ctx: { agentConfig: AgentParams, memories: AgentDocLoaded[] }) => PromiseOrNot<string>,
             vectorQuery: (ctx: { agentConfig: AgentParams, messages: Message[] }) => PromiseOrNot<string>,
             toolCallResult: (ctx: { agentConfig: AgentParams, toolResult: ToolResult }) => PromiseOrNot<string>,
             warningTooLong: (ctx: { agentConfig: AgentParams, messages: Message[] }) => PromiseOrNot<string>,
         },
         grammar: Record<string, string>,
         xmlEscapes: Record<string, string>,
+        qemuRootPassword: string,
     };
     numbers: MainParams["numbers"],
     samplers: MainParams["samplers"],
     toolParams: MainParams["toolParams"],
-    rules: BaseDB<AgentRule>,
-    facts: BaseDB<AgentFact>,
-    tasks: BaseDB<AgentTask>,
+    rules: BaseDB<AgentRule, AgentDocKeyData>,
+    facts: BaseDB<AgentFact, AgentDocKeyData>,
+    tasks: BaseDB<AgentTask, AgentDocKeyData>,
     qemu: Qemu,
 }
 export type AskRawParams = {
@@ -99,15 +109,19 @@ export type AskEnumParams<T extends Record<string | number | symbol, string>> = 
 export type AskRelevantMemoriesParams = {
     line: ClientLine,
     currentRole: ChatRole,
-    memories: (AgentRule | AgentFact | AgentTask)[],
-    firstCall?: boolean | undefined
+    memories: RecallResult[],
+    firstCall?: boolean | undefined,
+    updateWeights?: boolean | undefined,
 };
+export type RecallResult = ReturnType<Agent["recall"]> extends Promise<(infer T)[]> ? T : never;
 export type TryRecallParams = {
     line: ClientLine,
     messages: Message[],
     currentRole: ChatRole,
     query?: string | undefined,
     firstCall?: boolean,
+    updateWeights?: boolean | undefined,
+    memoriesBlacklist?: AgentDocStored[] | undefined,
     suffix?: ContentElem | ContentElem[] | undefined,
     prefix?: ContentElem | ContentElem[] | undefined,
 }
@@ -208,13 +222,35 @@ export type ArgsOfTool<Name extends ToolName> = {
 } & {
     [k in keyof (typeof toolArgsInfo)[Name]["optional"]]?: string | undefined
 };
-
 export function parseMarkdown(content: string) {
     return (new MarkdownParser().parse(content).children
         .map((e, i, a) => ({ start: e.char_num ?? 0, end: a[i + 1]?.char_num ?? content.length, elem: e }))
         .map(e => Object.assign({ text: content.slice(e.start, e.end) }, e))
     );
 }
+const yamlNumberPattern = new RegExp([
+    `[-+]?(0|[1-9][0-9_]*)`,
+    `[-+]?0x([0-9a-fA-F_]+)`,
+    `[-+]?0o([0-7_]+)`,
+    `[-+]?0b([01_]+)`,
+    `[-+]?(\\.[0-9_]+ | [0-9][0-9_]*(\\.[0-9_]*)?)([eE][-+]?[0-9]+)?`,
+    `\\+?(\\.inf | \\.Inf | \\.INF)`,
+    `-(\\.inf | \\.Inf | \\.INF)`,
+    `\\.nan | \\.NaN | \\.NAN`,
+].join("|"), "");
+const fixedKeyWeightPattern = new RegExp(`^(${yamlNumberPattern.source})( fixed)$`);
+const AgentDeserializeSchemaBase = z.object({
+    type: z.enum(["rule", "fact"]),
+    key_weights: z.record(z.string(), z.union([
+        z.number().nonnegative(),
+        z.string().regex(fixedKeyWeightPattern),
+    ])),
+});
+const AgentDeserializeSchemaTask = AgentDeserializeSchemaBase.extend({
+    status: z.enum(["done", "pending", "in_progress", "error"]),
+    tries: z.int().nonnegative(),
+    dependencies: z.array(z.string()),
+});
 
 export class Agent extends EventEmitter<AgentEvents> {
     public readonly activeFolder: string;
@@ -242,13 +278,21 @@ export class Agent extends EventEmitter<AgentEvents> {
         toolCallOpenTag: RegExp,
     };
     public readonly initialParams: AgentParams;
-    public readonly rules: BaseDB<AgentRule>;
-    public readonly facts: BaseDB<AgentFact>;
-    public readonly tasks: BaseDB<AgentTask>;
+    public readonly rules: BaseDB<AgentRule, AgentDocKeyData>;
+    public readonly facts: BaseDB<AgentFact, AgentDocKeyData>;
+    public readonly tasks: BaseDB<AgentTask, AgentDocKeyData>;
     public readonly qemu: Qemu;
-    public static serialize<T extends AgentRule | AgentFact | AgentTask>(db: BaseDB<T>, data: DocumentData<BaseDB<T>, T>): string {
+    public static serialize<T extends AgentDoc>(db: BaseDB<T, AgentDocKeyData>, data: DocumentData<BaseDB<T, AgentDocKeyData>, T, AgentDocKeyData>): string {
         const kind = { task: "Task", fact: "Fact", rule: "Rule" }[data.content.type];
-        const lines: string[] = ["---", `type: ${data.content.type}`];
+        const keys = data.vectorKeys.map((e, i) => Object.assign({ title: `Key ${i + 1}` }, e));
+        const lines: string[] = [
+            "---",
+            `type: ${data.content.type}`,
+            ...(keys.length === 0 ? [`key_weights: []`] : [
+                `key_weights:`,
+                ...keys.map(e => `  ${JSON.stringify(e.title)}: ${e.weight}`),
+            ]),
+        ];
         if (data.content.type === "task") {
             lines.push(
                 `status: ${data.content.status}`,
@@ -259,12 +303,12 @@ export class Agent extends EventEmitter<AgentEvents> {
         }
         lines.push(
             `---`,
-            `# Agent's ${kind}`,
+            `# ${kind} #x${new Yurandom(crypto.randomUUID()).hex(4)}`,
             `## Briefly`,
             data.content.briefly.replaceAll(/\s+/g, " ").trim(),
             "",
-            ...data.vectorKeys.flatMap((key, i) => [
-                `## Key ${i + 1}`,
+            ...keys.flatMap((key, i) => [
+                key.title,
                 ...key.keyText.trim().split("\n").map(e => `> ${e}`),
                 "",
             ]),
@@ -273,13 +317,11 @@ export class Agent extends EventEmitter<AgentEvents> {
         );
         return lines.join("\n");
     }
-    public static deserialize<T extends AgentRule | AgentFact | AgentTask>(db: BaseDB<T>, type: T["type"], data: string): DocumentDataConstructor<T> {
-        const { data: header, content } = matter(data);
-        const taskStatuses = ["done", "pending", "in_progress", "error"] as ["done", "pending", "in_progress", "error"];
-        ((a: AgentTaskStatus[]) => { })(taskStatuses);
-        const sections = parseMarkdown(content).filter(e => e.elem.type === "heading" && e.elem.depth === 2).map(({ start, end }, i, a) => ({
-            title: /^#+\s*([^\n]*)\s*$/.exec(content.slice(start, end))?.[1] ?? "",
-            content: content.slice(end, a[i + 1]?.start ?? content.length),
+    public static deserialize<T extends AgentDoc>(db: BaseDB<T, AgentDocKeyData>, type: T["type"], data: string): DocumentDataConstructor<T, AgentDocKeyData> {
+        const { data: header, content: text } = matter(data);
+        const sections = parseMarkdown(text).filter(e => e.elem.type === "heading" && e.elem.depth === 2).map(({ start, end }, i, a) => ({
+            title: /^#+\s*([^\n]*)\s*$/.exec(text.slice(start, end))?.[1] ?? "",
+            content: text.slice(end, a[i + 1]?.start ?? text.length),
         }));
         const body = sections.find(e => /^(Task|Fact|Rule) Body[\.:]?$/.exec(e.title) !== null)?.content;
         const briefly = sections.find(e => /^Briefly[\.:]?$/.exec(e.title) !== null)?.content;
@@ -289,19 +331,39 @@ export class Agent extends EventEmitter<AgentEvents> {
         if (briefly === undefined) {
             throw new Error(`cannot find Briefly section in serialized ${type} document`);
         }
-        const fields = (type === "task" ? z.object({
-            type: z.literal("task"),
-            status: z.enum(taskStatuses),
-            tries: z.int().nonnegative(),
-            dependencies: z.array(z.string()),
-        }) : z.object({
-            type: z.enum(["rule", "fact"]),
-        })).parse(header);
-        const vectorKeys: VectorKeyConstructor[] = (sections
+        const fields = (type === "task" ? AgentDeserializeSchemaTask : AgentDeserializeSchemaBase).parse(header);
+        const keyWeights = Object.fromEntries(Object.entries(fields.key_weights).map(([key, weight]) => {
+            let fixed = false;
+            if (typeof weight === "string") {
+                const m = fixedKeyWeightPattern.exec(weight);
+                if (m === null || m[1] === undefined) {
+                    throw new Error(`unexpected situation: cannot re-parse parsed key weight value`);
+                }
+                weight = parseFloat(m[1]);
+                fixed = true;
+            }
+            return [key, { weight, fixed }] as [string, { weight: number, fixed: boolean }];
+        }));
+        const keyWeightsLowercase = Object.fromEntries(Object.entries(keyWeights).map(([k, v]) => ([k.toLowerCase(), v] as [string, typeof v])));
+        const vectorKeys: VectorKeyConstructor<AgentDocKeyData>[] = (sections
             .filter(e => e.title.toLowerCase().startsWith("key"))
-            .map(e => ({ text: e.content.replaceAll(/^> ?/gm, ""), weight: 1.0 }))
+            .map(e => {
+                const { weight, fixed } = keyWeights[e.title] ?? keyWeightsLowercase[e.title.toLowerCase()] ?? { weight: 1.0, fixed: false };
+                return { text: e.content.replaceAll(/^> ?/gm, ""), weight, payload: { weightFixed: fixed } };
+            })
         );
-        return { content: Object.assign({ body, briefly }, fields) as T, vectorKeys };
+        let content: AgentDoc;
+        if (type === "task") {
+            const f = fields as z.output<typeof AgentDeserializeSchemaTask>;
+            content = { type: "task", body, briefly, dependencies: f.dependencies, status: f.status, tries: f.tries } as AgentTask;
+        } else if (type === "rule") {
+            content = { type: "rule", body, briefly } as AgentRule;
+        } else if (type === "fact") {
+            content = { type: "fact", body, briefly } as AgentFact;
+        } else {
+            throw new Error(`unexpected situation: illegal value of 'type': expected only 'task'|'fact'|'rule'`);
+        }
+        return { content: content as any, vectorKeys };
     }
     public constructor(params: AgentParams) {
         super();
@@ -379,18 +441,24 @@ export class Agent extends EventEmitter<AgentEvents> {
         this.tasks = params.tasks;
         this.qemu = params.qemu;
     }
-    public async recall(query: string): Promise<{ document: string, entry: AgentFact | AgentRule | AgentTask }[]> {
-        const rules = await this.rules.find(query, this.numbers.recall.rules.maxOutput);
-        const facts = await this.facts.find(query, this.numbers.recall.facts.maxOutput);
-        const tasks = await this.tasks.find(query, this.numbers.recall.tasks.maxOutput);
-        return [
+    public async recall(query: string, blacklist: AgentDocStored[] = []) {
+        const blacklistCache = Object.fromEntries(["rule", "task", "fact"]
+            .map(type => [type, Object.fromEntries(blacklist.filter(doc => doc.data.content.type === type).map(e => [e.name, true]))])
+        ) as { task: Record<string, true>, fact: Record<string, true>, rule: Record<string, true> };
+        const rules = await this.rules.find(query, Object.keys(blacklistCache.rule).length + this.numbers.recall.rules.maxOutput);
+        const facts = await this.facts.find(query, Object.keys(blacklistCache.fact).length + this.numbers.recall.facts.maxOutput);
+        const tasks = await this.tasks.find(query, Object.keys(blacklistCache.task).length + this.numbers.recall.tasks.maxOutput);
+        const documents = [
             ...rules.filter(e => e.distance >= this.numbers.recall.rules.minDistance && e.similarity >= this.numbers.recall.rules.minSimilarity),
             ...facts.filter(e => e.distance >= this.numbers.recall.facts.minDistance && e.similarity >= this.numbers.recall.facts.minSimilarity),
             ...tasks.filter(e => e.distance >= this.numbers.recall.tasks.minDistance && e.similarity >= this.numbers.recall.tasks.minSimilarity),
-        ].filter(e => e.distance >= this.numbers.recall.minDistance && e.similarity >= this.numbers.recall.minSimilarity).toSorted(
-            (a, b) => b.similarity - a.similarity
-        ).slice(0, this.numbers.recall.maxOutputTotal).map(
-            e => ({ document: e.document.name, entry: e.document.data.content })
+        ];
+        return (documents
+            .filter(e => e.distance >= this.numbers.recall.minDistance && e.similarity >= this.numbers.recall.minSimilarity)
+            .filter(e => blacklistCache[e.document.data.content.type][e.document.name] === undefined)
+            .toSorted((a, b) => b.similarity - a.similarity)
+            .slice(0, this.numbers.recall.maxOutputTotal)
+            .map(e => Object.assign({ entry: e.document.data.content }, e))
         );
     }
     public async run() {
@@ -429,7 +497,7 @@ export class Agent extends EventEmitter<AgentEvents> {
                 console.log("NO ENTRY TASK FOUND: work stopped");
                 return;
             }
-            await this.solve(task);
+            await this.solve(task.name);
         }
         // TODO: update task resolver: retrying error tasks, empty task list handling
         // TODO: use mtime
@@ -437,7 +505,8 @@ export class Agent extends EventEmitter<AgentEvents> {
 
         // TODO: make task solving asynchronous
     }
-    public async solve(taskDocument: StoredDocument<BaseDB<AgentTask>, AgentTask>) {
+    public async solve(taskName: string) {
+        const taskDocument = await this.tasks.get(taskName, true);
         const agent = this;
         const pre = agent.modelClient.prefixes;
         const line = await ClientLine.create(agent.modelClient, await agent.findLineId());
@@ -466,10 +535,12 @@ export class Agent extends EventEmitter<AgentEvents> {
                 await line.setSampler([{ type: "greedy" }], line.tokens.length);
                 history.add("assistant", step.text ?? "");
                 if (step.stopReasons.some(e => e === "max_entropy")) {
-                    const recallResult = await agent.tryRecall({ line, messages: history, currentRole: "assistant" });
-                    if (recallResult !== null) {
+                    const { text: recallResult, memories } = await agent.tryRecall({
+                        line, messages: history, currentRole: "assistant", memoriesBlacklist: history.getMemories()
+                    });
+                    if (memories.length !== 0) {
                         await line.step(pre.assistantToUser, recallResult, pre.userToAssistant);
-                        history.add("user", recallResult);
+                        history.add("user", recallResult, memories.map(e => e.document));
                     }
                 }
                 if (step.stopReasons.some(e => e === "max_tokens")) {
@@ -499,6 +570,36 @@ export class Agent extends EventEmitter<AgentEvents> {
             }
             // TODO: make history compression (in separate thread, this cleaned at first, new func)
 
+            // включи изменение весов в настройках
+            // split Agent class to functions and plain data type (required for smaller files and faster ui)
+            // при обработке ошибок в подзадаче, к ней цепляются временные {подзадачи исправления}, добавляемые в список зависимостей. Т.к. остальные зависимости выполнены (раз дошла очередь до подзадачи и та получила ошибку), эта новая зависимость будет выполнятся при попытке выполнить проваленную подзадачу. По выполнении такой подзадачи, она меняет проваленную подзадачу на новую, сохраняя число ошибок (текст задачи и история попыток исправления идут нахер, то есть в лог (как и все выполнения задач)) и удаляя себя. Сначала перефразирование (два раза) (для каждой формулировки включая начальную есть одна-две попыток исполнения), потом попытка *заменить* эту подзадачу, на другую, которая может быть вставлена на её место, потом расследование возможных причин провала в одной из зависимостей по всему древу зависимостей.
+
+
+            // Сделай каждое сообщение пользователя в виде XML-тега с подтегами и отдельным тегом `<instruction>`. Этот тег должен быть в каждом сообщении пользователя, и на это будет опираться агент. Все остальные теги -- это ресурсы и информация разного типа.
+            // TODO: prefix sharing в model.ts в u-llm-server
+
+            /*
+            Refine (последовательное уточнение): Обрабатывает диалог по частям, но каждая следующая часть добавляется к уже имеющемуся краткому содержанию, которое модель постоянно уточняет и дополняет
+            - Когда использовать: Для повествовательных диалогов, где важен хронологический порядок и логика развития
+            - Преимущество: Лучше сохраняет последовательность и контекст, чем Map-Reduce.
+            */
+            // на каждом выходном сообщении делай tryRecall -- нам нужны релевантные данные в сжатом *контексте*
+            // Используй XML-теги для жёсткого разделения и придания структуры и markdown-заголовки для более мягкого разделения по смыслу.
+            // сложная функция затухания для весов. Хранить "изменяемость" весов в Payload.
+
+            // пивная ротация, не пивная, и киберспортивная
+
+            /*
+            Улучши метод Refine. Нам нужны: некоторая скорость (мы можем выделить на сжатие не больше времени, чем тройной объём того, за сколько генерировались все сообщения), связность (нам критически важно, чтобы ИИ не воспринимал эту информацию как garbage input, т.к. модель весьма невелика и "штраф" общего качества вывода, который даёт garbage input нам особенно вреден) и сохранение максимального количества информации (модель работает в режиме агента и ей нужно не потерять информацию из прошлых шагов и вызовов инструментов). Ты свободен в выборе метода сжатия, но важно, чтобы он выполнялся той же моделью, что генерировала сообщения, т.к. мы не можем загрузить в память даже 1B модель из-за критической нехватки места (мы часто сжимаем контекст и держим его небольшим, так что даже освобождение kv-кэша не даст нам места под ещё одну модель). Также учитывай, что у тебя есть доступ к механизму "чекпоинтов" и наш движок инференса может бесплатно откатить состояние любой последовательности к любому ранее сгенерированному токену. Используй это, если оно принесёт реальную пользу.
+     Допустимо и полезно будет выводить часть информации в отдельные recall-блоки, т.к. модель работает как агент и при высокой энтропии логитов (либо самостоятельном вызове, либо сильной смене темы от предыдущего вызова) получает отфильтрованные ею же по релевантности факты и инструкции из памяти. В памяти испольтзуется векторный поиск по записям. Каждая запись (факт или инструкция) имеет набор чётко заданных ключей, чьи эмбеддинги и являются ключами для поиска. Мы чётко задаём, при каких эмбеддингах контекста будет предлагаться запись из памяти. Записи, подходящие по векторам выдаются только на быструю выборку релевантных, только выбранные попадают в реальный контекст.
+     Ты можешь (и это будет наиболее оптимально) сделать ставку именно на модуль памяти, сжимая диалог не столько в контекст, сколько в память, но тем не менее, что-то всё равно необходимо держать в контексте.
+     У каждого ключа каждой записи есть вес. Вес домножается на нормированный эмбеддинг ключа при помещении в БД. Поиск по скалярному произведению. Будь аккуратен с весами, это полезный инструмент, но чувствительный.
+     Ориентируйся на псевдокод и скрипт управления -- так будет легче распланировать наиболее оптимальный алгоритм сжатия.
+     Ты можешь использовать как основу любой метод суммаризации, и добавлять в алгоритм любые иные методы и идеи, полностью или частями.
+     Постарайся не захламлять память, но и не удалять информацию безвозвратно, тут тебе в помощь только веса воспоминаний: чуть больше и запись будет слишком частой, чуть меньше и она перестанет появляться вообще. Можешь не указывать конкретных значений весов, но хотя бы дай знать, на что ориентироваться при их установке.
+     Если тебе надо подумать ещё, говори, токены я выделю.
+            */
+
         } finally {
             const updates: Partial<AgentTask> = taskSuccess ? { status: "done" } : { status: "error", tries: taskDocument.data.content.tries + 1 };
             await agent.tasks.update(taskDocument.name, { content: Object.assign(taskDocument.data.content, updates) });
@@ -513,40 +614,23 @@ export class Agent extends EventEmitter<AgentEvents> {
         history.add("system", systemPrompt);
         history.add("user", taskText);
         await line.step(pre.initToSystem, systemPrompt, pre.systemToUser, taskText);
-        const recallResultFirst = await this.tryRecall({
+        const { text: recallText, memories } = await this.tryRecall({
             line,
             messages: history,
             currentRole: "user",
             firstCall: true,
             prefix: [],
+            updateWeights: true,
         });
-        if (recallResultFirst !== null) {
-            await line.push(recallResultFirst);
-            history.add("user", recallResultFirst);
+        if (memories.length !== 0) {
+            await line.push(recallText);
+            history.add("user", recallText, memories.map(e => e.document));
         }
         await line.step(pre.userToAssistant);
         return history;
     }
-    public async compressHistory(history: Message[]): Promise<Message[]> {
-        // TODO: steal existing
-        /*
-        Refine (последовательное уточнение): Обрабатывает диалог по частям, но каждая следующая часть добавляется к уже имеющемуся краткому содержанию, которое модель постоянно уточняет и дополняет
-        - Когда использовать: Для повествовательных диалогов, где важен хронологический порядок и логика развития
-        - Преимущество: Лучше сохраняет последовательность и контекст, чем Map-Reduce.
-        */
-        // на каждом выходном сообщении делай tryRecall -- нам нужны релевантные данные в сжатом *контексте*
-        // Используй XML-теги для жёсткого разделения и придания структуры и markdown-заголовки для более мягкого разделения по смыслу.
-        // сложная функция затухания для весов. Хранить "изменяемость" весов в Payload.
-        /*
-        Улучши метод Refine. Нам нужны: некоторая скорость (мы можем выделить на сжатие не больше времени, чем тройной объём того, за сколько генерировались все сообщения), связность (нам критически важно, чтобы ИИ не воспринимал эту информацию как garbage input, т.к. модель весьма невелика и "штраф" общего качества вывода, который даёт garbage input нам особенно вреден) и сохранение максимального количества информации (модель работает в режиме агента и ей нужно не потерять информацию из прошлых шагов и вызовов инструментов). Ты свободен в выборе метода сжатия, но важно, чтобы он выполнялся той же моделью, что генерировала сообщения, т.к. мы не можем загрузить в память даже 1B модель из-за критической нехватки места (мы часто сжимаем контекст и держим его небольшим, так что даже освобождение kv-кэша не даст нам места под ещё одну модель). Также учитывай, что у тебя есть доступ к механизму "чекпоинтов" и наш движок инференса может бесплатно откатить состояние любой последовательности к любому ранее сгенерированному токену. Используй это, если оно принесёт реальную пользу.
- Допустимо и полезно будет выводить часть информации в отдельные recall-блоки, т.к. модель работает как агент и при высокой энтропии логитов (либо самостоятельном вызове, либо сильной смене темы от предыдущего вызова) получает отфильтрованные ею же по релевантности факты и инструкции из памяти. В памяти испольтзуется векторный поиск по записям. Каждая запись (факт или инструкция) имеет набор чётко заданных ключей, чьи эмбеддинги и являются ключами для поиска. Мы чётко задаём, при каких эмбеддингах контекста будет предлагаться запись из памяти. Записи, подходящие по векторам выдаются только на быструю выборку релевантных, только выбранные попадают в реальный контекст.
- Ты можешь (и это будет наиболее оптимально) сделать ставку именно на модуль памяти, сжимая диалог не столько в контекст, сколько в память, но тем не менее, что-то всё равно необходимо держать в контексте.
- У каждого ключа каждой записи есть вес. Вес домножается на нормированный эмбеддинг ключа при помещении в БД. Поиск по скалярному произведению. Будь аккуратен с весами, это полезный инструмент, но чувствительный.
- Ориентируйся на псевдокод и скрипт управления -- так будет легче распланировать наиболее оптимальный алгоритм сжатия.
- Ты можешь использовать как основу любой метод суммаризации, и добавлять в алгоритм любые иные методы и идеи, полностью или частями.
- Постарайся не захламлять память, но и не удалять информацию безвозвратно, тут тебе в помощь только веса воспоминаний: чуть больше и запись будет слишком частой, чуть меньше и она перестанет появляться вообще. Можешь не указывать конкретных значений весов, но хотя бы дай знать, на что ориентироваться при их установке.
- Если тебе надо подумать ещё, говори, токены я выделю.
-        */
+    public async compressHistory(history: Message[]): Promise<{ messages: Message[], memo: AgentDocConstructor[] }> {
+        return { messages: history.slice(-5), memo: [] }; // TODO: later
     }
     public async findLineId() {
         let lineId: string;
@@ -641,23 +725,46 @@ export class Agent extends EventEmitter<AgentEvents> {
             line: params.line,
             currentRole: params.currentRole,
             grammar: `root ::= "<${tagName}>" [ \t]* ( "none" | ${grammarIndices(params.memories.map((e, i) => i + 1))} ) [ \t]* "</${tagName}>"`,
-            message: await this.formatRecallSelector(params.memories),
+            message: await this.formatRecallSelector(params.memories.map(e => e.document.data.content)),
             tagName,
             maxTokens: ((params.firstCall ?? false) ? this.numbers.firstRecall : this.numbers.recall).recallSelectorMaxTokens,
             maxIterations: this.numbers.askMaxIterations.askRelevantMemories,
         })).trim().toLowerCase();
         const selectedIds = answer === "none" ? [] : answer.split(",").map(e => parseInt(e.matchAll(/\d/g).toArray().join("")));
-        return params.memories.filter((e, i) => selectedIds.some(j => j + 1 === i));
+        const mUsed = 1 / selectedIds.length;
+        const mSkipped = -1 / params.memories.length - selectedIds.length;
+        return (await Promise.all(params.memories.map(async (e, i) => {
+            const selected = selectedIds.some(j => j + 1 === i);
+            if (selected) {
+                await this.updateKeyWeight(e.document, e.key.vectorId, mUsed);
+                return [e];
+            } else {
+                for (const { vectorId } of e.document.data.vectorKeys) {
+                    await this.updateKeyWeight(e.document, vectorId, mSkipped);
+                }
+                return [];
+            }
+        }))).flat();
+    }
+    public async updateKeyWeight(document: AgentTaskStored | AgentFactStored | AgentRuleStored, vectorId: string, multiplier: number) {
+        const key = document.data.vectorKeys.find(e => e.vectorId === vectorId);
+        if (key === undefined) {
+            throw new Error(`cannot find key with vectorId=${JSON.stringify(vectorId)} in document ${JSON.stringify({ name: document.name, type: document.data.content.type })}`);
+        }
+        const weight = key.weight + (key.weight / 100) * multiplier;
+        await document.db.update(document as any, { keyUpdates: [{ vectorId, weight }] });
     }
     public async tryRecall(params: TryRecallParams) {
-        const memories = (await this.recall(params.query ?? await this.formatVectorQuery(params.messages))).map(e => e.entry);
+        const memories = await this.recall(params.query ?? await this.formatVectorQuery(params.messages), params.memoriesBlacklist ?? []);
         const selectedMemories = memories.length === 0 ? [] : await this.askRelevantMemories({
             line: params.line,
             currentRole: params.currentRole,
             memories,
-            firstCall: params.firstCall
+            firstCall: params.firstCall,
+            updateWeights: params.updateWeights,
         });
-        return selectedMemories.length > 0 ? await this.formatRecallResult(selectedMemories) : null;
+        const text = selectedMemories.length > 0 ? await this.formatRecallResult(selectedMemories.map(e => e.entry)) : "";
+        return { text, searchMemories: memories, memories: selectedMemories };
     }
     public async tryToolCall(params: TryToolCallParams) {
         const pre = this.modelClient.prefixes;
@@ -848,7 +955,7 @@ export class Agent extends EventEmitter<AgentEvents> {
         return { toolName: "readfile", fragment };
     }
     public async executeSplitTask(params: ToolCallParams<"split_task">): Promise<ToolResultSplitTask> {
-        let tasksCreatedRaw: StoredDocument<BaseDB<AgentTask>, AgentTask>[];
+        let tasksCreatedRaw: AgentTaskStored[];
         try {
             tasksCreatedRaw = await this.addMemosBatched(params.text, ["task"]);
         } catch (e) {
@@ -858,18 +965,18 @@ export class Agent extends EventEmitter<AgentEvents> {
         return { toolName: "split_task", tasksCreated };
     }
     public async addMemosBatched(text: string, types: []): Promise<never[]>;
-    public async addMemosBatched(text: string, types: ["fact"]): Promise<StoredDocument<BaseDB<AgentFact>, AgentFact>[]>;
-    public async addMemosBatched(text: string, types: ["task"]): Promise<StoredDocument<BaseDB<AgentTask>, AgentTask>[]>;
-    public async addMemosBatched(text: string, types: ["rule"]): Promise<StoredDocument<BaseDB<AgentRule>, AgentRule>[]>;
-    public async addMemosBatched(text: string, types: MemoType[]): Promise<(StoredDocument<BaseDB<AgentFact>, AgentFact> | StoredDocument<BaseDB<AgentRule>, AgentRule> | StoredDocument<BaseDB<AgentTask>, AgentTask>)[]>;
-    public async addMemosBatched(text: string, types: MemoType[]) {
+    public async addMemosBatched(text: string, types: ["fact"]): Promise<AgentFactStored[]>;
+    public async addMemosBatched(text: string, types: ["task"]): Promise<AgentTaskStored[]>;
+    public async addMemosBatched(text: string, types: ["rule"]): Promise<AgentRuleStored[]>;
+    public async addMemosBatched(text: string, types: AgentDocBase["type"][]): Promise<(AgentFactStored | AgentRuleStored | AgentTaskStored)[]>;
+    public async addMemosBatched(text: string, types: AgentDocBase["type"][]) {
         const sections = parseMarkdown(text).filter(e => e.elem.type === "heading" && e.elem.depth === 1).map((e, i, a) => ({
             name: (e.elem as MdHeading).children.map(e => "text" in e ? (typeof e.text === "string" ? e.text : "") : "").join(""),
             text: text.slice(e.start, a[i + 1]?.start),
         }));
-        let memoType: MemoType | undefined = undefined;
+        let memoType: AgentDocBase["type"] | undefined = undefined;
         if (types.length === 1) {
-            memoType = types[0] as MemoType;
+            memoType = types[0] as AgentDocBase["type"];
         }
         const allowedMemoTypes = {
             fact: types.some(e => e === "fact"),
@@ -910,13 +1017,13 @@ export class Agent extends EventEmitter<AgentEvents> {
             agentConfig: this.initialParams,
         });
     }
-    public async formatRecallResult(memories: (AgentRule | AgentFact | AgentTask)[]) {
+    public async formatRecallResult(memories: AgentDoc[]) {
         return await this.strings.patterns.recallResult({
             memories: await Promise.all(memories.map(e => e.type === "task" ? this.loadTaskDependencies(e) : e)),
             agentConfig: this.initialParams,
         });
     }
-    public async formatRecallSelector(memories: (AgentRule | AgentFact | AgentTask)[]) {
+    public async formatRecallSelector(memories: AgentDoc[]) {
         return await this.strings.patterns.recallSelector({
             memories: await Promise.all(memories.map(e => e.type === "task" ? this.loadTaskDependencies(e) : e)),
             agentConfig: this.initialParams,

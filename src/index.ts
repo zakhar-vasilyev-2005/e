@@ -8,8 +8,8 @@ import { getFileTree } from './get-file-tree.js';
 import { VectorNormalizerLib } from './vector-normalizer.js';
 import { readConfig } from './config.js';
 import { DocumentDB, DocumentDBVectorIndexConfigScheme } from './memory.js';
-import { Agent, type AgentFact, type AgentParams, type AgentRule, type AgentTask } from './agent.js';
-import { compile } from 'lite-template';
+import { Agent, type AgentDocKeyData, type AgentFact, type AgentParams, type AgentRule, type AgentTask } from './agent.js';
+import { compile as templateCompile } from 'lite-template';
 import { Qemu, QemuCreateParamsScheme } from './qemu.js';
 
 
@@ -21,6 +21,7 @@ export const NameScheme = z.string().regex(/^[a-zA-Z_0-9]+$/);
 export const XMLNameScheme = z.string().regex(/^[:a-zA-Z_0-9-]+$/);
 export const GrammarNameScheme = z.string().regex(/^[^\0\n\/]+(\/[^\0\n\/]+)*$/u);
 export const FilePathScheme = z.string().regex(/^\/?[^\0\n\/]+(\/[^\0\n\/]+)*$/u);
+export const FileEncodingScheme = z.enum(["ascii", "utf8", "utf-8", "utf16le", "utf-16le", "ucs2", "ucs-2", "latin1"]);
 export const ToolParamsScheme = z.object({
     tool_names: z.array(NameScheme),
     max_tokens: z.int().positive(),
@@ -48,6 +49,12 @@ export const RecallParamsScheme = z.object({
     }),
     maxOutputTotal: z.int().positive(),
     recallSelectorMaxTokens: z.int().positive(),
+});
+export const MemoParamsScheme = z.object({
+    vectorIndexConfig: DocumentDBVectorIndexConfigScheme,
+    vectorIndexThreads: z.int().positive(),
+    fileEncoding: FileEncodingScheme,
+    keyWeightsDynamic: z.boolean(),
 });
 export const MainParamsScheme = z.object({
     "$schema": z.literal("./main-config.schema.json"),
@@ -91,7 +98,6 @@ export const MainParamsScheme = z.object({
             ask_enum: XMLNameScheme,
         }),
         xmlEscapes: z.record(z.string().regex(/^&[a-zA-Z0-9_#-]+;$/u), z.string()),
-        qemuRootPassword: z.string().regex(/^[^\n\0\t\r]*$/),
     }),
     numbers: z.object({
         stepTokensMax: z.int().positive(),
@@ -134,18 +140,9 @@ export const MainParamsScheme = z.object({
         split_task: ToolParamsScheme,
     }),
     memo: z.object({
-        rules: z.object({
-            vectorIndexConfig: DocumentDBVectorIndexConfigScheme,
-            vectorIndexThreads: z.int().positive(),
-        }),
-        facts: z.object({
-            vectorIndexConfig: DocumentDBVectorIndexConfigScheme,
-            vectorIndexThreads: z.int().positive(),
-        }),
-        tasks: z.object({
-            vectorIndexConfig: DocumentDBVectorIndexConfigScheme,
-            vectorIndexThreads: z.int().positive(),
-        }),
+        rules: MemoParamsScheme,
+        facts: MemoParamsScheme,
+        tasks: MemoParamsScheme,
     }),
     qemu: z.object({
         createParams: QemuCreateParamsScheme,
@@ -153,6 +150,7 @@ export const MainParamsScheme = z.object({
             mount_tag: NameScheme,
             security_model: z.enum(["passthrough", "mapped-xattr", "mapped-file", "none"]),
         })]),
+        rootPassword: z.string().regex(/^[^\n\0\t\r]*$/),
     }),
 });
 export type MainParams = z.output<typeof MainParamsScheme>;
@@ -218,55 +216,55 @@ export async function main(params?: MainParams) {
                     const relative = file.slice(path.join(activeFolder, "patterns").length);
                     const name = relative.startsWith(path.sep) ? relative.slice(1) : relative;
                     const text = await fs.readFile(file, { encoding: "utf8" });
-                    return [name, compile(text)] as [string, (a: unknown) => unknown];
+                    return [name, templateCompile(text)] as [string, (a: unknown) => unknown];
                 })
         ).then(e => Object.fromEntries(e)),
     ]);
-    const rules = new DocumentDB<AgentRule, "utf8">({
+    const rules = new DocumentDB<AgentRule, AgentDocKeyData, any>({
         embedder,
         vectorNormalizer,
         mainFolder: path.join(activeFolder, "memo/rules"),
         vectorIndexConfig: params.memo.rules.vectorIndexConfig,
         vectorIndexThreads: params.memo.rules.vectorIndexThreads,
         fileExtension: ".md",
-        fileEncoding: "utf8",
+        fileEncoding: params.memo.rules.fileEncoding,
         serialize(rule) {
             return Agent.serialize(this, rule);
         },
-        deserialize(rule) {
-            return Agent.deserialize(this, "rule", rule);
+        deserialize(data) {
+            return Agent.deserialize(this, "rule", data as string);
         },
         validator: () => ({ valid: true }),
     });
-    const facts = new DocumentDB<AgentFact, "utf8">({
+    const facts = new DocumentDB<AgentFact, AgentDocKeyData, any>({
         embedder,
         vectorNormalizer,
         mainFolder: path.join(activeFolder, "memo/facts"),
         vectorIndexConfig: params.memo.facts.vectorIndexConfig,
         vectorIndexThreads: params.memo.facts.vectorIndexThreads,
         fileExtension: ".md",
-        fileEncoding: "utf8",
+        fileEncoding: params.memo.facts.fileEncoding,
         serialize(fact) {
             return Agent.serialize(this, fact);
         },
-        deserialize(fact) {
-            return Agent.deserialize(this, "fact", fact);
+        deserialize(data) {
+            return Agent.deserialize(this, "fact", data as string);
         },
         validator: () => ({ valid: true }),
     });
-    const tasks = new DocumentDB<AgentTask, "utf8">({
+    const tasks = new DocumentDB<AgentTask, AgentDocKeyData, any>({
         embedder,
         vectorNormalizer,
         mainFolder: path.join(activeFolder, "memo/tasks"),
         vectorIndexConfig: params.memo.tasks.vectorIndexConfig,
         vectorIndexThreads: params.memo.tasks.vectorIndexThreads,
         fileExtension: ".md",
-        fileEncoding: "utf8",
+        fileEncoding: params.memo.tasks.fileEncoding,
         serialize(task) {
             return Agent.serialize(this, task);
         },
-        deserialize(task) {
-            return Agent.deserialize(this, "task", task);
+        deserialize(data) {
+            return Agent.deserialize(this, "task", data as string);
         },
         async validator(taskDocument) {
             let visited: Record<string, true> = { [taskDocument.name]: true };
@@ -330,6 +328,7 @@ export async function main(params?: MainParams) {
                     })
                 )
             )),
+            qemuRootPassword: params.qemu.rootPassword,
         }),
         facts,
         rules,
